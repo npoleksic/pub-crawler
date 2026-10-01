@@ -17,8 +17,10 @@ SEARCH_QUERY = (
     'OR '
     '(("freely moving" OR "freely behaving" OR "head-unrestrained" OR "head-free" OR "eye and head" OR "naturalistic behavior") '
     'AND ("electrophysiology" OR "neural recording" OR "single-unit" OR "telemetry" OR "macaque" OR "macaques" OR "primate" OR "primates" OR "NHP")) '
-    ') AND (SRC:MED OR SRC:PPR)'
-    )
+    ') '
+    'AND NOT ("patients" OR "clinical trial" OR "case report") '
+    'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
+)
 DAYS_BACK = 30
 
 # Load environment variables (pulled from GitHub Secrets)
