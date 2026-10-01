@@ -82,7 +82,7 @@ def summarize_abstract(abstract):
                     # Break to fallback model on any other unexpected API errors (e.g., 500)
                     break
                     
-        return "Unable to generate summary. Abstract preview: {abstract[:250]}..."
+        return f"Unable to generate summary. Abstract preview: {abstract[:250]}..."
 
 def send_email(papers):
     if not papers:
