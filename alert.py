@@ -37,7 +37,6 @@ MODEL_CHAIN = [
 
 # Initialize Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
 
 def get_recent_papers():
     today = datetime.now()
@@ -49,7 +48,7 @@ def get_recent_papers():
         "query": f'{SEARCH_QUERY} AND FIRST_PDATE:{date_str}',
         "format": "json",
         "resultType": "core", # Required to retrieve full abstracts
-        "pageSize": 50
+        "pageSize": 5
     }
     
     response = requests.get(url, params=params)
