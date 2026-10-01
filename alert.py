@@ -7,6 +7,8 @@ from email.mime.text import MIMEText
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 import time
+import re
+from difflib import SequenceMatcher
 # Configuration: Targets PubMed (SRC:MED) and Preprints like bioRxiv (SRC:PPR)
 SEARCH_QUERY = (
     '( '
@@ -86,6 +88,48 @@ def summarize_abstract(abstract):
                     
     return f"Unable to generate summary. Abstract preview: {abstract[:250]}..."
 
+def is_similar_title(title1, title2, threshold=0.85):
+    # Strip non-alphanumeric characters and convert to lowercase
+    norm1 = re.sub(r'[^a-z0-9]', '', title1.lower())
+    norm2 = re.sub(r'[^a-z0-9]', '', title2.lower())
+    
+    # Catch cases where one title is just a slightly truncated version of the other
+    if norm1 in norm2 or norm2 in norm1:
+        return True
+        
+    # Calculate similarity ratio (0.0 to 1.0)
+    return SequenceMatcher(None, norm1, norm2).ratio() > threshold
+
+def remove_duplicate_papers(papers):
+    unique_papers = []
+    
+    for p in papers:
+        is_dup = False
+        current_title = p.get("title", "")
+        current_doi = p.get("doi", "")
+        
+        for up in unique_papers:
+            # 1. Fast exact check: if both have DOIs and they match
+            if current_doi and current_doi == up.get("doi"):
+                is_dup = True
+                break
+            
+            # 2. Fuzzy check: compare titles
+            if current_title and up.get("title"):
+                if is_similar_title(current_title, up.get("title")):
+                    is_dup = True
+                    # If the new duplicate is from a peer-reviewed source (MED/PMC), 
+                    # replace the stored preprint version with it.
+                    if p.get("source") in ["MED", "PMC"] and up.get("source") == "PPR":
+                        unique_papers.remove(up)
+                        unique_papers.append(p)
+                    break
+                    
+        if not is_dup:
+            unique_papers.append(p)
+            
+    return unique_papers
+
 def send_email(papers):
     if not papers:
         print("No matching papers found this week.")
@@ -125,5 +169,6 @@ def send_email(papers):
     server.quit()
 
 if __name__ == "__main__":
-    papers = get_recent_papers()
-    send_email(papers)
+    all_papers = get_recent_papers()
+    papers_final = remove_duplicate_papers(all_papers)
+    send_email(papers_final)
