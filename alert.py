@@ -4,7 +4,7 @@ import smtplib
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import google.generativeai as genai
+from google import genai
 from google.api_core.exceptions import ResourceExhausted
 import time
 import re
@@ -25,7 +25,7 @@ SEARCH_QUERY = (
     'AND NOT ("patients" OR "clinical trial" OR "case report") '
     'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
 )
-DAYS_BACK = 90
+DAYS_BACK = 7
 
 # Load environment variables (pulled from GitHub Secrets)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -34,12 +34,11 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
 
 MODEL_CHAIN = [
-    "gemini-3.5-flash-lite",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash"
-    # "gemini-3.5-flash-lite"
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite"
 ]
 
 # Initialize Gemini
@@ -147,7 +146,12 @@ def send_email(papers):
     
     for p in papers:
         title = p.get("title", "No Title")
-        journal = p.get("journalTitle", "Preprint / Unknown Source")
+        journal = (
+            p.get("journalInfo", {}).get("journal", {}).get("title") or 
+            p.get("journalTitle") or 
+            p.get("bookOrReportDetails", {}).get("publisher") or 
+            "Unknown Source"
+        )
         authors = p.get("authorString", "Unknown Authors")
         doi = p.get("doi", "")
         link = f"https://doi.org/{doi}" if doi else f"https://europepmc.org/article/{p.get('source', '')}/{p.get('id', '')}"
