@@ -35,11 +35,11 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
 
 MODEL_CHAIN = [
+    "gemini-3.5-flash-lite",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite"
+    "gemini-3.5-flash"
 ]
 
 # Initialize Gemini
@@ -75,11 +75,13 @@ def summarize_abstract(abstract):
         
         while True:
             try:
+                chat = client.chats.create(model=model_name)
                 # response = model.generate_content(prompt)
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt
-                )
+                # response = client.models.generate_content(
+                #     model=model_name,
+                #     contents=prompt
+                # )
+                response = chat.send_message(prompt)
                 return response.text.strip()
             except errors.APIError as e:
             # except ResourceExhausted as e:
