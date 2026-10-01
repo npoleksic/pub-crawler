@@ -71,7 +71,7 @@ def summarize_abstract(abstract):
     prompt = f"Summarize the following scientific abstract in exactly 2 sentences, focusing on the main finding and its significance:\n\n{abstract}"
 
     for model_name in MODEL_CHAIN:
-        model = genai.GenerativeModel(model_name)
+        # model = genai.GenerativeModel(model_name)
         
         while True:
             try:
