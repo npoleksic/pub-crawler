@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
           
       - name: Install dependencies
-        run: pip install requests google-genai
+        run: pip install requests google-genai google-api-core
         
       - name: Run alert script
         env:
