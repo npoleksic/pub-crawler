@@ -32,11 +32,12 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
 
 MODEL_CHAIN = [
+    "gemini-3.5-flash-lite",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite"
+    "gemini-3.5-flash"
+    # "gemini-3.5-flash-lite"
 ]
 
 # Initialize Gemini
@@ -58,9 +59,9 @@ def get_recent_papers():
     response = requests.get(url, params=params)
     response.raise_for_status()
     data = response.json()
+    results = data.get("resultList", {}).get("result", [])
+    return [p for p in results if p.get("doi")]
     
-    return data.get("resultList", {}).get("result", [])
-
 def summarize_abstract(abstract):
     if not abstract:
         return "No abstract available."
