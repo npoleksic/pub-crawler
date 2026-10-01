@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 import time
 # Configuration: Targets PubMed (SRC:MED) and Preprints like bioRxiv (SRC:PPR)
 SEARCH_QUERY = (
@@ -25,6 +26,14 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GMAIL_SENDER = os.environ.get("GMAIL_SENDER")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
+
+MODEL_CHAIN = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite"
+]
 
 # Initialize Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -54,12 +63,27 @@ def summarize_abstract(abstract):
         return "No abstract available."
     
     prompt = f"Summarize the following scientific abstract in exactly 2 sentences, focusing on the main finding and its significance:\n\n{abstract}"
-    try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception:
-        # Fallback to the raw abstract if the API fails or times out
-        return f"Summary generation failed. Abstract preview: {abstract[:250]}..."
+
+    for model_name in MODEL_CHAIN:
+            model = genai.GenerativeModel(model_name)
+            
+            while True:
+                try:
+                    response = model.generate_content(prompt)
+                    return response.text.strip()
+                    
+                except ResourceExhausted as e:
+                    error_msg = str(e).lower()
+                    if "per day" in error_msg:
+                        break 
+                        
+                    time.sleep(10)
+                    
+                except Exception:
+                    # Break to fallback model on any other unexpected API errors (e.g., 500)
+                    break
+                    
+        return "Unable to generate summary. Abstract preview: {abstract[:250]}..."
 
 def send_email(papers):
     if not papers:
@@ -91,7 +115,6 @@ def send_email(papers):
             <p style="margin: 0;"><strong>Summary:</strong> {summary}</p>
         </div>
         """
-        
     msg.attach(MIMEText(html_content, "html"))
     
     server = smtplib.SMTP("smtp.gmail.com", 587)
