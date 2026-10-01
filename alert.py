@@ -15,7 +15,7 @@ SEARCH_QUERY = (
     '("frontal eye field" OR "frontal eye fields") '
     'OR '
     '(("active vision" OR "natural gaze" OR "3D gaze" OR "gaze control" OR "gaze behavior" '
-    'OR "eye movement" OR "eye movements" OR "saccade" OR "saccades" OR "saccadic" OR "vergence" OR "saccade-vergence" OR "disjunctive saccades" OR "disconjugate saccades" OR "binocular eye movements"'
+    'OR "eye movement" OR "eye movements" OR "saccade" OR "saccades" OR "saccadic" OR "vergence" OR "saccade-vergence" OR "disjunctive saccades" OR "disconjugate saccades" OR "binocular" '
     'OR "oculomotor" OR "superior colliculus") '
     'AND ("macaque" OR "macaques" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "neural" OR "cortex" OR "cerebellum")) '
     'OR '
