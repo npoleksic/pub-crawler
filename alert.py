@@ -5,11 +5,12 @@ from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from google import genai
-from google.api_core.exceptions import ResourceExhausted
+from google.genai import errors
+# from google.api_core.exceptions import ResourceExhausted
 import time
 import re
 from difflib import SequenceMatcher
-# Configuration: Targets PubMed (SRC:MED) and Preprints like bioRxiv (SRC:PPR)
+# Configuration: Targets PubMed (SRC:MED) and (SRC:PMC) and Preprints like bioRxiv (SRC:PPR)
 SEARCH_QUERY = (
     '( '
     '("frontal eye field" OR "frontal eye fields") '
@@ -42,7 +43,7 @@ MODEL_CHAIN = [
 ]
 
 # Initialize Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def get_recent_papers():
     today = datetime.now()
@@ -74,12 +75,16 @@ def summarize_abstract(abstract):
         
         while True:
             try:
-                response = model.generate_content(prompt)
+                # response = model.generate_content(prompt)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
                 return response.text.strip()
-                
-            except ResourceExhausted as e:
+            except errors.APIError as e:
+            # except ResourceExhausted as e:
                 error_msg = str(e).lower()
-                if "per day" in error_msg:
+                if "per day" in error_msg or "quota" in error_msg:
                     break 
                     
                 time.sleep(10)
