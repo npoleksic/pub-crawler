@@ -14,7 +14,9 @@ SEARCH_QUERY = (
     '( '
     '("frontal eye field" OR "frontal eye fields") '
     'OR '
-    '(("active vision" OR "natural gaze" OR "3D gaze" OR "gaze control" OR "gaze behavior" OR "eye movement" OR "eye movements" OR "saccade" OR "saccades" OR "saccadic" OR "oculomotor" OR "superior colliculus") '
+    '(("active vision" OR "natural gaze" OR "3D gaze" OR "gaze control" OR "gaze behavior" '
+    'OR "eye movement" OR "eye movements" OR "saccade" OR "saccades" OR "saccadic" OR "vergence" OR "saccade-vergence" OR "disjunctive saccades" OR "disconjugate saccades" OR "binocular eye movements"'
+    'OR "oculomotor" OR "superior colliculus") '
     'AND ("macaque" OR "macaques" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "neural" OR "cortex" OR "cerebellum")) '
     'OR '
     '(("freely moving" OR "freely behaving" OR "head-unrestrained" OR "head-free" OR "eye and head" OR "naturalistic behavior") '
@@ -23,7 +25,7 @@ SEARCH_QUERY = (
     'AND NOT ("patients" OR "clinical trial" OR "case report") '
     'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
 )
-DAYS_BACK = 30
+DAYS_BACK = 90
 
 # Load environment variables (pulled from GitHub Secrets)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -53,7 +55,7 @@ def get_recent_papers():
         "query": f'{SEARCH_QUERY} AND FIRST_PDATE:{date_str}',
         "format": "json",
         "resultType": "core", # Required to retrieve full abstracts
-        "pageSize": 5
+        "pageSize": 50
     }
     
     response = requests.get(url, params=params)
