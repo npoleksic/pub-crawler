@@ -52,7 +52,7 @@ def get_recent_papers():
         "query": f'{SEARCH_QUERY} AND FIRST_PDATE:{date_str}',
         "format": "json",
         "resultType": "core", # Required to retrieve full abstracts
-        "pageSize": 3
+        "pageSize": 5
     }
     
     response = requests.get(url, params=params)
