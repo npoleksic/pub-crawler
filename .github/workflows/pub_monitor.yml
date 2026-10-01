@@ -1,0 +1,33 @@
+name: Publication Monitor
+
+on:
+  schedule:
+    # Runs every Monday at 14:00 UTC (9:00 AM Central Time)
+    - cron: '0 14 * * 1'
+  workflow_dispatch: # Allows you to manually click "Run workflow" in GitHub to test it
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install dependencies
+        run: pip install requests google-generativeai
+        
+      - name: Run alert script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+        run: python alert.py
+      
+      - name: Keep workflow alive
+        uses: gautamkrishnar/keepalive-workflow@v2
