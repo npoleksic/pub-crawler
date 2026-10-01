@@ -64,25 +64,25 @@ def summarize_abstract(abstract):
     prompt = f"Summarize the following scientific abstract in exactly 2 sentences, focusing on the main finding and its significance:\n\n{abstract}"
 
     for model_name in MODEL_CHAIN:
-            model = genai.GenerativeModel(model_name)
-            
-            while True:
-                try:
-                    response = model.generate_content(prompt)
-                    return response.text.strip()
+        model = genai.GenerativeModel(model_name)
+        
+        while True:
+            try:
+                response = model.generate_content(prompt)
+                return response.text.strip()
+                
+            except ResourceExhausted as e:
+                error_msg = str(e).lower()
+                if "per day" in error_msg:
+                    break 
                     
-                except ResourceExhausted as e:
-                    error_msg = str(e).lower()
-                    if "per day" in error_msg:
-                        break 
-                        
-                    time.sleep(10)
+                time.sleep(10)
+                
+            except Exception:
+                # Break to fallback model on any other unexpected API errors (e.g., 500)
+                break
                     
-                except Exception:
-                    # Break to fallback model on any other unexpected API errors (e.g., 500)
-                    break
-                    
-        return f"Unable to generate summary. Abstract preview: {abstract[:250]}..."
+    return f"Unable to generate summary. Abstract preview: {abstract[:250]}..."
 
 def send_email(papers):
     if not papers:
