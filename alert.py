@@ -240,7 +240,6 @@ def send_email(papers, include_topics, exclude_topics):
 
 
 if __name__ == "__main__":
-
     search_query = get_search_query()
     including, excluding = get_criteria()
     new_papers = find_papers(search_query)

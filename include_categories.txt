@@ -2,6 +2,7 @@ visual system
 vestibular system
 motor behavior
 spatial navigation
+active exploration
 decision making
 eye/gaze tracking methods
-movement psychophysics
+macaque electrophysiology
