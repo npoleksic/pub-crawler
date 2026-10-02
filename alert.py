@@ -10,12 +10,14 @@ import time
 import re
 from difflib import SequenceMatcher
 
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GMAIL_SENDER = os.environ.get("GMAIL_SENDER")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
 
 def get_search_query():
     with open("search_terms.txt", "r") as file:
@@ -35,10 +37,23 @@ def find_papers(query, days_back=7):
         "resultType": "core", # Required to retrieve full abstracts
         "pageSize": 200
     }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    data = response.json()
-    results = data.get("resultList", {}).get("result", [])
+    attempts = 0
+    results = []
+
+    while attempts <= 5:
+        try:
+            attempts += 1
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("resultList", {}).get("result", [])
+        except requests.exceptions.HTTPError as http_err:
+            if attempts > 5:
+                print(f"[ERROR][find_papers] HTTP ERROR: {http_err}")
+            else:
+                print(f"[WARNING][find_papers] Pub. database API call failed. Reattempting ({attempts}/5)...")
+                time.sleep(10)
+
     all_papers = [p for p in results if p.get("doi")]
     papers = remove_duplicate_papers(all_papers)
     return papers
@@ -73,6 +88,7 @@ def remove_duplicate_papers(papers):
             unique_papers.append(p)
     return unique_papers
 
+
 def get_criteria():
     with open("include_categories.txt", "r") as file:
         include_list = file.read().splitlines()
@@ -84,6 +100,7 @@ def get_criteria():
     exclude_topics = ", ".join(exclude_list)
 
     return include_topics, exclude_topics
+
 
 def ask_gemini(prompt):
     MODEL_CHAIN = [
@@ -141,6 +158,7 @@ def filter_by_title(papers, include_topics, exclude_topics):
         except Exception as e:
             print(f"[ERROR][filter_by_title]: {str(e)}")
             return None
+
 
 def check_and_summarize_abstract(abstract, include_topics, exclude_topics):
     if not abstract:
@@ -219,6 +237,7 @@ def send_email(papers, include_topics, exclude_topics):
     server.login(GMAIL_SENDER, GMAIL_APP_PASSWORD)
     server.send_message(msg)
     server.quit()
+
 
 if __name__ == "__main__":
 
