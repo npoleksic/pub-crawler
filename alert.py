@@ -11,20 +11,40 @@ import time
 import re
 from difflib import SequenceMatcher
 # Configuration: Targets PubMed (SRC:MED) and (SRC:PMC) and Preprints like bioRxiv (SRC:PPR)
-SEARCH_QUERY = (
-    '( '
-    '("frontal eye field" OR "frontal eye fields" OR "superior colliculus") '
-    'OR '
-    '(("active vision" OR "3D gaze" OR "gaze control" OR "oculomotor" OR "visuomotor" OR "visuospatial" '
-    'OR "saccade" OR "saccades" OR "vergence" OR "binocular" OR "gaze-tracking") '
-    'AND ("macaque" OR "macaques" OR "monkey" OR "monkeys" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "fMRI")) '
-    'OR '
-    '(("freely moving" OR "freely behaving" OR "head-unrestrained" OR "head-free" OR "eye and head" OR "naturalistic behavior") '
-    'AND ("electrophysiology" OR "neural recording" OR "macaque" OR "macaques" OR "primate" OR "primates" OR "NHP")) '
-    ') '
-    'AND NOT ("patients" OR "clinical trial" OR "case report") '
-    'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
-)
+# SEARCH_QUERY = (
+#     '( '
+#     '("frontal eye field" OR "frontal eye fields" OR "superior colliculus") '
+#     'OR '
+#     '(("active vision" OR "3D gaze" OR "natural gaze" OR "gaze control" OR "oculomotor" OR "visuomotor" OR "visuospatial" OR "gaze behavior" '
+#     'OR "saccade" OR "saccades" OR "vergence" OR "binocular" OR "gaze-tracking") '
+#     'AND ("macaque" OR "macaques" OR "monkey" OR "monkeys" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "fMRI")) '
+#     'OR '
+#     '(("freely moving" OR "freely behaving" OR "head-unrestrained" OR "head-free" OR "eye and head" OR "naturalistic behavior") '
+#     'AND ("electrophysiology" OR "neural recording" OR "macaque" OR "macaques" OR "primate" OR "primates" OR "NHP")) '
+#     ') '
+#     'AND NOT ("patients" OR "clinical trial" OR "case report") '
+#     'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
+# )
+terms = ["frontal eye field", "frontal eye fields", "superior colliculus", "cortex", "cortical", "visuomotor", "oculomotor",
+         "gaze", "visuospatial", "visuomotor", "cerebellum", "brain stem", "saccade", "saccades", "vergence", "binocular",
+         "eye tracking", "freely moving", "naturalistic behavior", "natural behavior", "active vision", "vestibular",
+         "eye movement", "eye movements", "sensorimotor", "motor coordination"]
+SEARCH_QUERY = f"({' OR '.join(f'\"{term}\"' for term in terms)}) AND (SRC:MED OR SRC:PPR OR SRC:PMC)"
+
+# SEARCH_QUERY = (
+#     '( '
+#     '("frontal eye field" OR "frontal eye fields" OR "superior colliculus") '
+#     'OR '
+#     '(("active vision" OR "3D gaze" OR "natural gaze" OR "gaze control" OR "oculomotor" OR "visuomotor" OR "visuospatial" OR "gaze behavior" '
+#     'OR "saccade" OR "saccades" OR "vergence" OR "binocular" OR "gaze-tracking") '
+#     'AND ("macaque" OR "macaques" OR "monkey" OR "monkeys" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "fMRI")) '
+#     'OR '
+#     '(("freely moving" OR "freely behaving" OR "head-unrestrained" OR "head-free" OR "eye and head" OR "naturalistic behavior") '
+#     'AND ("electrophysiology" OR "neural recording" OR "macaque" OR "macaques" OR "primate" OR "primates" OR "NHP")) '
+#     ') '
+#     'AND NOT ("patients" OR "clinical trial" OR "case report") '
+#     'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
+# )
 DAYS_BACK = 7
 
 # Load environment variables (pulled from GitHub Secrets)
@@ -54,7 +74,7 @@ def get_recent_papers():
         "query": f'{SEARCH_QUERY} AND FIRST_PDATE:{date_str}',
         "format": "json",
         "resultType": "core", # Required to retrieve full abstracts
-        "pageSize": 50
+        "pageSize": 100
     }
     
     response = requests.get(url, params=params)
@@ -68,15 +88,15 @@ def summarize_abstract(abstract):
         return "No abstract available."
     
     prompt = (
-        "Evaluate the following abstract considering the following criteria:\n"
+        "Evaluate the provided scientific abstract while considering the following criteria:\n"
         "The research must be relevant to systems or behavioral neuroscience research, "
-        "studying or proposing tools/techniques to study sensory or motor processes. "
-        "The study should focus on awake, behaving humans or non-human primates. "
-        "If the study uses other animal models, such as mice, it should be strictly related to "
-        "3D vision, oculomotor control, or gaze behavior. Research should provide insight into "
-        "the function of neural populations or neural circuits. Research primarily focusing on "
-        "clinical practice, sleep, speech or language, cellular/molecular/genetic mechanisms, "
-        "or the retina should be excluded.\n"
+        "studying or proposing tools/techniques to study sensory processes or motor control. "
+        "The study should use non-human primates or other awake, behaving animals. If the study "
+        "involves human subjects, it should be specifically related to visual or oculomotor processes. "
+        "Research on any other model organisms, such as mice, should be strictly related to 3D vision, "
+        "oculomotor control, or gaze behavior. Research with a sole focus on clinical practice or "
+        "cellular/molecular/genetic mechanisms should be omitted.\n\n"
+        
         "If the abstract meets this criteria, summarize it in exactly 2 sentences focusing on the main finding and its significance.\n"
         "If the abstract DOES NOT meet this criteria, output exactly the following word exactly as it is written: REJECT\n\n"
         f"Abstract:\n{abstract}"
@@ -156,12 +176,12 @@ def send_email(papers):
         return
         
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Pub-monitor: {len(papers)} new papers!"
+    # msg["Subject"] = f"Pub-monitor: {len(papers)} new papers!"
     msg["From"] = GMAIL_SENDER
     msg["To"] = GMAIL_RECIPIENT
     
     html_content = "<h2>Weekly Literature Alert</h2>"
-    
+    n_papers = 0
     for p in papers:
         title = p.get("title", "No Title")
         journal = (
@@ -181,6 +201,7 @@ def send_email(papers):
         
         if summary.strip().upper().startswith("REJECT"):
             continue
+        n_papers++
         html_content += f"""
         <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #ccc;">
             <h3 style="margin: 0 0 5px 0;"><a href="{link}">{title}</a></h3>
@@ -189,6 +210,11 @@ def send_email(papers):
             <p style="margin: 0;"><strong>Summary:</strong> {summary}</p>
         </div>
         """
+    if n_papers > 1:
+        msg["Subject"] = f"Pub-monitor: {n_papers} new papers!"
+    else:
+        msg["Subject"] = f"Pub-monitor: {n_papers} new paper!"
+
     msg.attach(MIMEText(html_content, "html"))
     
     server = smtplib.SMTP("smtp.gmail.com", 587)
