@@ -201,7 +201,7 @@ def send_email(papers):
         
         if summary.strip().upper().startswith("REJECT"):
             continue
-        n_papers++
+        n_papers+=1
         html_content += f"""
         <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #ccc;">
             <h3 style="margin: 0 0 5px 0;"><a href="{link}">{title}</a></h3>
