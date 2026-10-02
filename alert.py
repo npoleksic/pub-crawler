@@ -13,15 +13,14 @@ from difflib import SequenceMatcher
 # Configuration: Targets PubMed (SRC:MED) and (SRC:PMC) and Preprints like bioRxiv (SRC:PPR)
 SEARCH_QUERY = (
     '( '
-    '("frontal eye field" OR "frontal eye fields") '
+    '("frontal eye field" OR "frontal eye fields" OR "superior colliculus") '
     'OR '
-    '(("active vision" OR "natural gaze" OR "3D gaze" OR "gaze control" OR "gaze behavior" '
-    'OR "eye movement" OR "eye movements" OR "saccade" OR "saccades" OR "saccadic" OR "vergence" OR "saccade-vergence" OR "disjunctive saccades" OR "disconjugate saccades" OR "binocular" '
-    'OR "oculomotor" OR "superior colliculus") '
-    'AND ("macaque" OR "macaques" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "neural" OR "cortex" OR "cerebellum")) '
+    '(("active vision" OR "3D gaze" OR "gaze control" OR "oculomotor" OR "visuomotor" OR "visuospatial" '
+    'OR "saccade" OR "saccades" OR "vergence" OR "binocular" OR "gaze-tracking") '
+    'AND ("macaque" OR "macaques" OR "monkey" OR "monkeys" OR "primate" OR "primates" OR "NHP" OR "marmoset" OR "electrophysiology" OR "fMRI")) '
     'OR '
     '(("freely moving" OR "freely behaving" OR "head-unrestrained" OR "head-free" OR "eye and head" OR "naturalistic behavior") '
-    'AND ("electrophysiology" OR "neural recording" OR "single-unit" OR "telemetry" OR "macaque" OR "macaques" OR "primate" OR "primates" OR "NHP")) '
+    'AND ("electrophysiology" OR "neural recording" OR "macaque" OR "macaques" OR "primate" OR "primates" OR "NHP")) '
     ') '
     'AND NOT ("patients" OR "clinical trial" OR "case report") '
     'AND (SRC:MED OR SRC:PPR OR SRC:PMC)'
@@ -68,11 +67,23 @@ def summarize_abstract(abstract):
     if not abstract:
         return "No abstract available."
     
-    prompt = f"Summarize the following scientific abstract in exactly 2 sentences, focusing on the main finding and its significance:\n\n{abstract}"
-
+    prompt = (
+        "Evaluate the following abstract considering the following criteria:\n"
+        "The research must be relevant to systems or behavioral neuroscience research, "
+        "studying or proposing tools/techniques to study sensory or motor processes. "
+        "The study should focus on awake, behaving humans or non-human primates. "
+        "If the study uses other animal models, such as mice, it should be strictly related to "
+        "3D vision, oculomotor control, or gaze behavior. Research should provide insight into "
+        "the function of neural populations or neural circuits. Research primarily focusing on "
+        "clinical practice, sleep, speech or language, cellular/molecular/genetic mechanisms, "
+        "or the retina should be excluded.\n"
+        "If the abstract meets this criteria, summarize it in exactly 2 sentences focusing on the main finding and its significance.\n"
+        "If the abstract DOES NOT meet this criteria, output exactly the following word exactly as it is written: REJECT\n\n"
+        f"Abstract:\n{abstract}"
+        )
+    
     for model_name in MODEL_CHAIN:
         # model = genai.GenerativeModel(model_name)
-        
         while True:
             try:
                 chat = client.chats.create(model=model_name)
@@ -165,7 +176,11 @@ def send_email(papers):
         abstract = p.get("abstractText", "")
         
         summary = summarize_abstract(abstract)
+        
         time.sleep(5)
+        
+        if summary.strip().upper().startswith("REJECT"):
+            continue
         html_content += f"""
         <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #ccc;">
             <h3 style="margin: 0 0 5px 0;"><a href="{link}">{title}</a></h3>
