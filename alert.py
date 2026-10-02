@@ -33,7 +33,7 @@ def find_papers(query, days_back=7):
         "query": f'{query} AND FIRST_PDATE:{date_str}',
         "format": "json",
         "resultType": "core", # Required to retrieve full abstracts
-        "pageSize": 100
+        "pageSize": 200
     }
     response = requests.get(url, params=params)
     response.raise_for_status()
