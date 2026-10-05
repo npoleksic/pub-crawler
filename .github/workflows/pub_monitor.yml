@@ -3,7 +3,7 @@ name: Publication Monitor
 on:
   schedule:
     # Runs every Monday at 14:00 UTC (9:00 AM Central Time)
-    - cron: '0 14 * * 1'
+    - cron: '15 13 * * 1'
   workflow_dispatch: # Allows you to manually click "Run workflow" in GitHub to test it
 
 jobs:
