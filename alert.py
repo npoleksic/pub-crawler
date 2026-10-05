@@ -9,7 +9,7 @@ from google.genai import errors
 import time
 import re
 from difflib import SequenceMatcher
-
+import json
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GMAIL_SENDER = os.environ.get("GMAIL_SENDER")
@@ -102,119 +102,107 @@ def get_criteria():
     return include_topics, exclude_topics
 
 
-def ask_gemini(prompt):
+def ask_gemini(prompt, expect_json=False):
     MODEL_CHAIN = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
         "gemini-2.5-flash-lite",
         "gemini-3.8-flash",
-        "gemini-3.7-flash"
+        "gemini-3.7-flash",  # Added missing comma here
         "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3-flash-preview",
-        "gemini-2.5-flash",
+        "gemini-3.5-flash"
     ]
+
+    config = {"response_mime_type": "application/json"} if expect_json else None
+
     for model in MODEL_CHAIN:
         while True:
             try:
-                chat = client.chats.create(model=model)
-                response = chat.send_message(prompt)
+                # Direct generate_content is perfectly fine here, no need for chats.create
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config
+                )
                 return response.text.strip()
             except errors.APIError as api_err:
                 error_msg = str(api_err).lower()
-                print(f"[ERROR][ask_gemini] API ERROR: {error_msg}")
                 if "per day" in error_msg or "quota" in error_msg:
-                    break
+                    break  # Advance to next model
+                print(f"[WARNING] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
             except Exception as err:
                 print(f"[ERROR][ask_gemini]: {str(err)}")
-
-            time.sleep(5)
+                break
     return None
 
 
-def filter_by_title(papers, include_topics, exclude_topics):
-    title_list = "\n".join(f"{i}) {p.get("title", "No Title")}" for i, p in enumerate(papers))
+def batch_process_papers(papers, include_topics, exclude_topics, batch_size=10):
+    approved_papers = []
 
-    prompt = (
-        "Given the numbered list of paper titles, determine if the paper is likely to include or exclude the following topics. "
-        "Papers should be cover topics relevant to neuroscience. "
-        "Provide only a comma separated list of the numbers that correspond to papers that VIOLATE this criteria. If there are none, "
-        "respond with exactly: NULL.\n"
-        f"INCLUDES AT LEAST ONE OF: {include_topics}\nEXCLUDE: {exclude_topics}\n\nTITLES:\n{title_list}"
-    )
+    for i in range(0, len(papers), batch_size):
+        batch = papers[i:i + batch_size]
+        print(f"[LOG] Evaluating papers {i + 1} to {min(i + batch_size, len(papers))}...")
 
-    response = ask_gemini(prompt)
-    if response is None:
-        return None
-    elif response == "NULL":
-        return papers
-    else:
-        try:
-            filtered_idx = [int(x) for x in response.split(",")]
-            indices_to_remove = set(filtered_idx)
-            papers_filt = [paper for i, paper in enumerate(papers) if i not in indices_to_remove]
-            return papers_filt
-        except Exception as e:
-            print(f"[ERROR][filter_by_title]: {str(e)}")
-            return None
+        # Construct a JSON-friendly payload for the LLM
+        payload = []
+        for idx, p in enumerate(batch):
+            payload.append({
+                "id": idx,
+                "title": p.get("title", "No Title"),
+                "abstract": p.get("abstractText", "No abstract available.")
+            })
 
+        prompt = (
+            "You are a rigorous scientific screener. Review the following JSON array of research papers.\n"
+            "Criteria:\n"
+            "1. Must be relevant to systems or behavioral neuroscience studying awake, behaving non-human primates, humans, or model organisms.\n"
+            f"2. MUST INCLUDE at least one topic: {include_topics}\n"
+            f"3. MUST NOT INCLUDE any topic: {exclude_topics}\n\n"
+            "For each paper, evaluate if it meets ALL criteria. If it does, write a 2-sentence summary of the main finding. If it fails, set summary to 'REJECT'.\n"
+            "Respond ONLY with a valid JSON array of objects using this exact schema: [{\"id\": int, \"summary\": \"string\"}]\n\n"
+            f"Papers:\n{json.dumps(payload)}"
+        )
 
-def check_and_summarize_abstract(abstract, include_topics, exclude_topics):
-    if not abstract:
-        return "No abstract available."
+        response = ask_gemini(prompt, expect_json=True)
 
-    prompt = (
-        "Evaluate the provided scientific abstract while considering the following criteria:\n"
-        "The research must be relevant to systems or behavioral neuroscience research and focus "
-        "on studying awake, behaving non-human primates, humans, or other model organisms."
-        f"The research should include one of the following topics: {include_topics}\n "
-        f"The research should NOT include the following topics: {exclude_topics}\n"
-        "If the abstract meets this criteria, summarize it in exactly 2 sentences "
-        "focusing on the main findings and their significance.\n"
-        "If the abstract does not meet this criteria, output the following word exactly "
-        "as it is written: REJECT\n\n"
-        f"Abstract:\n{abstract}"
-    )
+        if response:
+            try:
+                results = json.loads(response)
+                for res in results:
+                    summary = res.get("summary", "REJECT")
+                    if summary != "REJECT" and "Unable to generate" not in summary:
+                        # Attach the summary back to the original paper dictionary
+                        paper = batch[res["id"]]
+                        paper["llm_summary"] = summary
+                        approved_papers.append(paper)
+            except json.JSONDecodeError:
+                print("[ERROR] Failed to parse JSON from Gemini. Skipping batch.")
 
-    response = ask_gemini(prompt)
-    if response is None:
-        return f"Unable to generate summary. Abstract preview: {abstract[:250]}"
-    elif response == "REJECT":
-        return None
-    else:
-        return response
+        time.sleep(5)  # Throttle batches to respect RPM limits
 
+    return approved_papers
 
-def send_email(papers, include_topics, exclude_topics):
-        
+def send_email(papers):
     msg = MIMEMultipart("alternative")
     msg["From"] = GMAIL_SENDER
     msg["To"] = GMAIL_RECIPIENT
-    
+
     html_content = "<h2>Weekly Literature Alert</h2>"
-    n_papers = 0
+
     for p in papers:
         title = p.get("title", "No Title")
         journal = (
-            p.get("journalInfo", {}).get("journal", {}).get("title") or 
-            p.get("journalTitle") or 
-            p.get("bookOrReportDetails", {}).get("publisher") or 
-            "Unknown Source"
+                p.get("journalInfo", {}).get("journal", {}).get("title") or
+                p.get("journalTitle") or
+                p.get("bookOrReportDetails", {}).get("publisher") or
+                "Unknown Source"
         )
         authors = p.get("authorString", "Unknown Authors")
         doi = p.get("doi", "")
         link = f"https://doi.org/{doi}" if doi else f"https://europepmc.org/article/{p.get('source', '')}/{p.get('id', '')}"
-        abstract = p.get("abstractText", "")
-        
-        summary = check_and_summarize_abstract(abstract, include_topics, exclude_topics)
-        
-        time.sleep(5)
-        
-        if summary is None:
-            continue
+        summary = p.get("llm_summary", "Summary missing.")
 
-        n_papers+=1
         html_content += f"""
         <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #ccc;">
             <h3 style="margin: 0 0 5px 0;"><a href="{link}">{title}</a></h3>
@@ -224,14 +212,11 @@ def send_email(papers, include_topics, exclude_topics):
         </div>
         """
 
-    print(f"[LOG] {n_papers} paper(s) with relevant abstracts")
-    if n_papers > 1:
-        msg["Subject"] = f"Pub-monitor: {n_papers} new papers!"
-    else:
-        msg["Subject"] = f"Pub-monitor: {n_papers} new paper!"
-
+    n_papers = len(papers)
+    print(f"[LOG] {n_papers} paper(s) passed screening.")
+    msg["Subject"] = f"Pub-monitor: {n_papers} new paper{'s' if n_papers != 1 else ''}!"
     msg.attach(MIMEText(html_content, "html"))
-    
+
     server = smtplib.SMTP("smtp.gmail.com", 587)
     server.starttls()
     server.login(GMAIL_SENDER, GMAIL_APP_PASSWORD)
@@ -242,14 +227,15 @@ def send_email(papers, include_topics, exclude_topics):
 if __name__ == "__main__":
     search_query = get_search_query()
     including, excluding = get_criteria()
+
     new_papers = find_papers(search_query)
-    if len(new_papers) > 0:
-        print(f"[LOG] {len(new_papers)} candidate paper(s) found")
-        filtered_papers = filter_by_title(new_papers, including, excluding)
-        if filtered_papers is not None and len(filtered_papers) > 0:
-            print(f"[LOG] {len(filtered_papers)} paper(s) with relevant titles")
-            send_email(filtered_papers, including, excluding)
+    if new_papers:
+        print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
+        filtered_papers = batch_process_papers(new_papers, including, excluding)
+
+        if filtered_papers:
+            send_email(filtered_papers)
         else:
-            print(f"[LOG] No relevant papers remaining")
+            print("[LOG] No relevant papers remaining after LLM screening.")
     else:
-        print(f"[LOG] No candidate papers found")
+        print("[LOG] No candidate papers found in database.")
