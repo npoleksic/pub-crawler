@@ -1,6 +1,6 @@
 # pub-crawler: New Publication Alert System
 
-pub-crawler is an automated literature screening tool that queries the Europe PMC database, deduplicates results, and uses Google's Gemini LLM to rigorously screen, score, and summarize abstracts based on lab-defined criteria. Curated results are emailed directly to you in a compact grid format.
+pub-crawler is an automated literature screening tool that queries the Europe PMC database and uses Google's Gemini LLM to rigorously screen, score, and summarize newly released abstracts (journals + preprints) based on user-defined criteria. Results are provided via email in an easy-to-read format.
 
 ## 1. Prerequisites
 
