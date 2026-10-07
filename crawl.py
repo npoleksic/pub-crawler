@@ -263,7 +263,7 @@ def send_email(papers):
     msg = EmailMessage()
     msg['From'] = GMAIL_SENDER
     msg['To'] = GMAIL_RECIPIENT
-    msg['Subject'] = f"Pub-monitor: {n_papers} new paper{'s' if n_papers != 1 else ''}!"
+    msg['Subject'] = f"pub-crawler: {n_papers} new paper{'s' if n_papers != 1 else ''}!"
 
     html_content = f'<h3 style="font-family: Arial, sans-serif; margin-left: 10px;">A pub crawl found {n_papers} paper(s) published in the last week! </h3>\n'
     html_content += '<table width="100%" cellpadding="0" cellspacing="10" border="0" style="font-family: Arial, sans-serif;">\n'
