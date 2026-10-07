@@ -1,0 +1,75 @@
+# ==========================================
+# PUB-CRAWLER SEARCH CONFIGURATION
+# ==========================================
+
+[FIELD_OF_INTEREST]
+systems neuroscience
+
+# How far back to search
+[DAYS_BACK]
+7
+
+# Terms for initial query of publications
+[SEARCH]
+frontal eye field
+frontal eye fields
+superior colliculus
+visual pathway
+middle temporal area
+V3A
+CIP
+FST
+visuomotor
+oculomotor
+sensorimotor
+3D vision
+macaque
+macaques
+freely moving
+naturalistic behavior
+active vision
+eye movement
+eye movements
+binocular
+cerebellum
+eye tracking
+cortex
+cortical
+motor coordination
+
+# Topics to include (for LLM filter)
+[INCLUDE]
+visual processing
+multisensory integration
+macaque cortical circuits
+oculomotor circuits
+motor control circuits
+macaque neurophysiology
+active exploration
+new eye/gaze tracking methods
+
+# Topics to exclude (for LLM filter)
+[EXCLUDE]
+case studies
+clinical trials
+human social behavior
+speech production
+language processing
+observational studies
+organoids
+molecular mechanisms
+microscopy
+cell biology
+maturation
+infant or early life models
+auditory processing
+neurodevelopment
+insect models
+genetics
+sleep
+psychedelics
+eye disease
+spinal cord
+biomarkers
+diagnosis
+infectious disease
