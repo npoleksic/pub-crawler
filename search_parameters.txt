@@ -61,15 +61,18 @@ molecular mechanisms
 microscopy
 cell biology
 maturation
-infant or early life models
+prenatal or infant or early life models
+elderly or aging models
 auditory processing
 neurodevelopment
 insect models
-genetics
-sleep
+sleep or sleep cycles
+anesthesia or unconsciousness
 psychedelics
 eye disease
 spinal cord
 biomarkers
+biosensors
 diagnosis
 infectious disease
+new fMRI or EEG methods

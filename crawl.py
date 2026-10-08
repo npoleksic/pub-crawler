@@ -192,28 +192,36 @@ def ask_gemini(prompt, expect_json=False):
     return None
 
 
-def batch_process_papers(papers, params, batch_size=10):
+def batch_process_papers(papers, params, batch_size=5):
     approved_papers = []
     include_topics = ", ".join(params["INCLUDE"])
     exclude_topics = ", ".join(params["EXCLUDE"])
     field_of_interest = params["FIELD_OF_INTEREST"][0]
-    for i in range(0, len(papers), batch_size):
-        batch = papers[i:i + batch_size]
-        print(f"[LOG] Evaluating papers {i + 1} to {min(i + batch_size, len(papers))}...")
+
+    valid_papers = [p for p in papers if p.get("abstractText") and p.get("abstractText").strip()]
+    dropped_count = len(papers) - len(valid_papers)
+    if dropped_count > 0:
+        print(f"[LOG] Dropped {dropped_count} paper(s) before screening due to missing abstracts.")
+
+
+    for i in range(0, len(valid_papers), batch_size):
+        print(f"[LOG] Evaluated {i} out of {len(valid_papers)} paper(s)...".ljust(30), end="\r", flush=True)
+        batch = valid_papers[i:i + batch_size]
+        # print(f"[LOG] Evaluating papers {i + 1} to {min(i + batch_size, len(valid_papers))}...")
 
         payload = []
         for idx, p in enumerate(batch):
             journal = (
-                p.get("journalInfo", {}).get("journal", {}).get("title") or
-                p.get("journalTitle") or
-                p.get("bookOrReportDetails", {}).get("publisher") or
-                "Unknown Source"
+                    p.get("journalInfo", {}).get("journal", {}).get("title") or
+                    p.get("journalTitle") or
+                    p.get("bookOrReportDetails", {}).get("publisher") or
+                    "Unknown Source"
             )
             payload.append({
                 "id": idx,
                 "title": p.get("title", "No Title"),
                 "journal": journal,
-                "abstract": p.get("abstractText", "No abstract available.")
+                "abstract": p.get("abstractText")
             })
 
         prompt = (
@@ -222,9 +230,11 @@ def batch_process_papers(papers, params, batch_size=10):
             f"1. Must be strictly {field_of_interest} research.\n"
             f"2. Must be a preprint or published in a reputable journal that is known for publishing high-level {field_of_interest} research.\n"
             f"3. MUST cover at least one of the following topics: {include_topics}\n"
-            f"4. MUST NOT INCLUDE any of the following topics: {exclude_topics}\n\n"
-            "Score each paper's core relevance and impact to Criteria 3 on a scale of 1 to 10, considering journal and novelty of research. "
-            "If the score is 9 or higher, AND it passes Criteria 1, 2 and 4, write a 2-sentence summary of the significance and main findings. "
+            f"4. UNDER NO CIRCUMSTANCES should it include any of the following topics: {exclude_topics}\n\n"
+            "Considering the relevance to criteria #3 and the journal they are published in, and without comparing the paper to the others in the prompt, "
+            "score each paper on scale of 1 to 10. "
+            "If the score is 9 or higher AND it satisfies the other criteria, write a 2-sentence summary of the significance and main findings. "
+            "If it fails ANY criteria OR it scores 8 or lower, the summary MUST be exactly the word: REJECT\n"
             "Respond ONLY with a valid JSON array using this exact schema: [{\"id\": int, \"summary\": \"string\"}]\n\n"
             f"Papers:\n{json.dumps(payload)}"
         )
@@ -235,22 +245,31 @@ def batch_process_papers(papers, params, batch_size=10):
             try:
                 results = json.loads(response)
                 for res in results:
-                    summary = res.get("summary", "REJECT")
-                    if summary != "REJECT" and "Unable to generate" not in summary:
+                    summary = res.get("summary", "REJECT").strip()
+                    summary_lower = summary.lower()
+
+                    is_rejected = (
+                            "reject" in summary_lower or
+                            "no abstract" in summary_lower or
+                            len(summary) < 30
+                    )
+
+                    if not is_rejected:
                         paper = batch[res["id"]]
                         paper["llm_summary"] = summary
                         approved_papers.append(paper)
             except json.JSONDecodeError:
-                print("[ERROR] Failed to parse JSON from Gemini. Skipping batch.")
+                print("[ERROR] Failed to parse JSON from LLM. Skipping batch.".ljust(30))
 
         time.sleep(5)
-
+    print(f"[LOG] Completed evaluation of {len(papers)} paper(s)!".ljust(30))
     return approved_papers
 
 
-def send_email(papers):
+def send_email(papers, days_back):
     print(f"[LOG] {len(papers)} paper(s) passed screening.")
 
+    # Pre-filter papers with valid summaries
     valid_papers = []
     for p in papers:
         summary = p.get("llm_summary", "Summary missing.")
@@ -265,8 +284,29 @@ def send_email(papers):
     msg['To'] = GMAIL_RECIPIENT
     msg['Subject'] = f"pub-crawler: {n_papers} new paper{'s' if n_papers != 1 else ''}!"
 
-    html_content = f'<h3 style="font-family: Arial, sans-serif; margin-left: 10px;">A pub crawl found {n_papers} paper(s) published in the last week! </h3>\n'
-    html_content += '<table width="100%" cellpadding="0" cellspacing="10" border="0" style="font-family: Arial, sans-serif;">\n'
+    # Injecting the responsive CSS media queries for mobile clients
+    html_content = f"""
+    <html>
+    <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        @media screen and (max-width: 600px) {{
+            .tile {{
+                display: block !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+                margin-bottom: 10px !important;
+            }}
+            .empty-tile {{
+                display: none !important;
+            }}
+        }}
+    </style>
+    </head>
+    <body style="font-family: Arial, sans-serif;">
+    <h3 style="margin-left: 10px;">A pub crawl found {n_papers} paper{'s' if n_papers != 1 else ''} published in the last {days_back} days! </h3>
+    <table width="100%" cellpadding="0" cellspacing="10" border="0">
+    """
 
     for i in range(0, n_papers, 2):
         html_content += "<tr>\n"
@@ -285,8 +325,9 @@ def send_email(papers):
                 link = f"https://doi.org/{doi}" if doi else f"https://europepmc.org/article/{p.get('source', '')}/{p.get('id', '')}"
                 summary = p.get("llm_summary")
 
+                # Note the class="tile" added to the <td>
                 html_content += f"""
-                <td width="50%" valign="top" style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #fafafa;">
+                <td class="tile" width="50%" valign="top" style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #fafafa;">
                     <div style="font-size: 14px; font-weight: bold; margin-bottom: 8px; line-height: 1.3;">
                         <a href="{link}" style="color: #0b57d0; text-decoration: none;">{title}</a>
                     </div>
@@ -299,10 +340,15 @@ def send_email(papers):
                     </div>
                 </td>\n"""
             else:
-                html_content += '                <td width="50%" style="border: none; background: transparent;"></td>\n'
+                # Note the class="empty-tile" so it disappears entirely on mobile
+                html_content += '                <td class="empty-tile" width="50%" style="border: none; background: transparent;"></td>\n'
         html_content += "</tr>\n"
 
-    html_content += "</table>\n"
+    html_content += """
+    </table>
+    </body>
+    </html>
+    """
 
     print("[LOG] Composing email...")
     msg.set_content(html_content, subtype='html')
@@ -332,7 +378,7 @@ if __name__ == "__main__":
         filtered_papers = batch_process_papers(new_papers, params)
 
         if filtered_papers:
-            send_email(filtered_papers)
+            send_email(filtered_papers, days_back)
         else:
             print("[LOG] No relevant papers remaining after LLM screening.")
     else:
