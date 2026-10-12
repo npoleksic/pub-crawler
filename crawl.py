@@ -90,7 +90,9 @@ def load_search_params(filename="search_parameters.txt"):
 
 
 def get_search_query(search_terms):
-    return f"({' OR '.join(f'\"{term}\"' for term in search_terms)}) AND (SRC:MED OR SRC:PPR OR SRC:PMC)"
+    formatted_terms = " OR ".join(f'TITLE_ABS:"{term}"' for term in search_terms)
+    return f"({formatted_terms}) AND (SRC:MED OR SRC:PPR OR SRC:PMC)"
+    # return f"({' OR '.join(f'\"{term}\"' for term in search_terms)}) AND (SRC:MED OR SRC:PPR OR SRC:PMC)"
 
 
 def find_papers(query, days_back=7):
@@ -227,9 +229,9 @@ def batch_process_papers(papers, params, batch_size=5):
         prompt = (
             "You are a rigorous scientific screener. Review the following JSON array of research papers.\n"
             "Criteria:\n"
-            f"1. Must be strictly {field_of_interest} research.\n"
+            f"1. Must be strictly primary {field_of_interest} research.\n"
             f"2. Must be a preprint or published in a reputable journal that is known for publishing high-level {field_of_interest} research.\n"
-            f"3. MUST cover at least one of the following topics: {include_topics}\n"
+            f"3. MUST directly study, review, or theorize regarding at least one of the following topics: {include_topics}\n"
             f"4. UNDER NO CIRCUMSTANCES should it include any of the following topics: {exclude_topics}\n\n"
             "Considering the relevance to criteria #3 and the journal they are published in, and without comparing the paper to the others in the prompt, "
             "score each paper on scale of 1 to 10. "

@@ -9,12 +9,15 @@ systems neuroscience
 [DAYS_BACK]
 7
 
+
 # Terms for initial query of publications
 [SEARCH]
 frontal eye field
 frontal eye fields
 superior colliculus
 visual pathway
+visual hierarchy
+visual stream
 middle temporal area
 V3A
 CIP
@@ -32,27 +35,40 @@ eye movement
 eye movements
 binocular
 cerebellum
+rhesus monkey
+rhesus monkeys
+non-human primate
+non-human primates
 eye tracking
-cortex
-cortical
 motor coordination
+
 
 # Topics to include (for LLM filter)
 [INCLUDE]
-visual processing
-multisensory integration
-macaque cortical circuits
-oculomotor circuits
-motor control circuits
-macaque neurophysiology
-active exploration
-new eye/gaze tracking methods
+predictive coding
+brain-computer interface
+monkey/human visual pathways
+vertebrate motor control or motor learning circuits
+vertebrate multisensory integration
+monkey/human cortical circuits
+monkey/human oculomotor or gaze control circuits
+monkey/human neurophysiology
+vertebrate sensorimotor circuit recording or perturbation
+monkey/human active gaze exploration or naturalistic visual behavior
+freely-moving monkey experiments
+monkey/human eye/gaze tracking methods
+functional neuroimaging during motor or visual behavior
 
 # Topics to exclude (for LLM filter)
 [EXCLUDE]
+anatomical studies
 case studies
 clinical trials
+human psychophysics (unless vision or eye movement related)
 human social behavior
+stroke
+Alzheimer's
+epilepsy
 speech production
 language processing
 observational studies
@@ -75,4 +91,4 @@ biomarkers
 biosensors
 diagnosis
 infectious disease
-new fMRI or EEG methods
+EEG

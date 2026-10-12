@@ -10,4 +10,4 @@ echo.
 python crawl.py
 
 echo.
-pause
+cmd \k
