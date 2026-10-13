@@ -181,7 +181,7 @@ def ask_gemini(prompt, expect_json=False):
 
     config = {"response_mime_type": "application/json"} if expect_json else None
 
-    for model in MODEL_CHAIN:
+    for i, model in enumerate(MODEL_CHAIN):
         while True:
             try:
                 chat = client.chats.create(model=model, config=config)
@@ -191,8 +191,12 @@ def ask_gemini(prompt, expect_json=False):
 
             except errors.APIError as api_err:
                 error_msg = str(api_err).lower()
-                if "per day" in error_msg or "quota" in error_msg or "high demand" in error_msg:
+                if "per day" in error_msg or "quota" in error_msg:
+                    print(f"[WARNING] Daily rate limit exceeded for model: {model}. Switching to model: {MODEL_CHAIN[i]}")
                     break
+                elif "high demand" in error_msg:
+                    print(f"[WARNING] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i]}")
+
                 print(f"[WARNING] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
             except Exception as err:
