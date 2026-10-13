@@ -90,7 +90,7 @@ def load_search_params(filename="search_parameters.txt"):
                     params[current_section].append(line)
 
     except FileNotFoundError:
-        print(f"[ERROR] Configuration file '{filename}' not found.")
+        print(f"[ERROR][load_search_params] Configuration file '{filename}' not found.")
 
     return params
 
@@ -192,12 +192,12 @@ def ask_gemini(prompt, expect_json=False):
             except errors.APIError as api_err:
                 error_msg = str(api_err).lower()
                 if "per day" in error_msg or "quota" in error_msg:
-                    print(f"[WARNING] Daily rate limit exceeded for model: {model}. Switching to model: {MODEL_CHAIN[i]}")
+                    print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Switching to model: {MODEL_CHAIN[i]}")
                     break
                 elif "high demand" in error_msg:
-                    print(f"[WARNING] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i]}")
+                    print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i]}")
 
-                print(f"[WARNING] API Rate limit hit. Pausing 10s...")
+                print(f"[WARNING][ask_gemini] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
             except Exception as err:
                 print(f"[ERROR][ask_gemini]: {str(err)}")
@@ -273,7 +273,7 @@ def batch_process_papers(papers, params, batch_size=5):
                         paper["llm_summary"] = summary
                         approved_papers.append(paper)
             except json.JSONDecodeError:
-                print("[ERROR] Failed to parse JSON from LLM. Skipping batch.".ljust(30))
+                print("[ERROR][batch_process_papers] Failed to parse JSON from LLM. Skipping batch.".ljust(30))
 
         time.sleep(5)
     print(f"[LOG] Completed evaluation of {len(papers)} paper(s)!".ljust(30))
