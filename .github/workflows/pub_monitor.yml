@@ -1,32 +1,29 @@
-name: Publication Monitor
+name: start crawling
 
 on:
-  #schedule:
-    # Runs every Monday at 14:00 UTC (9:00 AM Central Time)
-   # - cron: '13 13 * * 1'
-  workflow_dispatch: # Allows you to manually click "Run workflow" in GitHub to test it
+  workflow_dispatch:
 
 jobs:
-  run-script:
+  crawl:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          
-      - name: Install dependencies
-        run: pip install requests google-genai
-        
-      - name: Run alert script
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-genai python-dotenv
+
+      - name: Run Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
-        run: python alert.py
+        run: python crawl.py

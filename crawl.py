@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv, set_key
+import sys
 
 ENV_FILE = ".env"
 
@@ -25,9 +26,16 @@ def setup_credentials():
         "GMAIL_RECIPIENT": "Recipient Email Address"
     }
 
-    needs_setup = any(not os.environ.get(key) for key in required_keys)
+    # Find which keys are actually missing from the environment
+    missing_keys = [key for key in required_keys if not os.environ.get(key)]
 
-    if needs_setup:
+    if missing_keys:
+        # Prevent hanging on input() in GitHub Actions or non-interactive shells
+        if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdout.isatty():
+            print(f"[ERROR] Missing required credentials in CI/CD environment: {', '.join(missing_keys)}")
+            print("Ensure these are set in GitHub Secrets and mapped in the workflow file.")
+            sys.exit(1)
+
         print("\n" + "=" * 45)
         print(" FIRST-TIME SETUP: API KEYS & CREDENTIALS")
         print("=" * 45)
@@ -36,15 +44,13 @@ def setup_credentials():
         if not Path(ENV_FILE).exists():
             Path(ENV_FILE).touch()
 
-        for env_var, description in required_keys.items():
-            if not os.environ.get(env_var):
-                val = input(f"Paste your {description}: ").strip()
-                set_key(ENV_FILE, env_var, val)
-                os.environ[env_var] = val
+        for env_var in missing_keys:
+            val = input(f"Paste your {required_keys[env_var]}: ").strip()
+            set_key(ENV_FILE, env_var, val)
+            os.environ[env_var] = val
 
         print("\n[LOG] Setup complete! Keys saved to .env file.")
         print("=" * 45 + "\n")
-
 
 setup_credentials()
 
@@ -306,7 +312,6 @@ def send_email(papers, days_back):
     </style>
     </head>
     <body style="font-family: Arial, sans-serif;">
-    <h3 style="margin-left: 10px;">A pub crawl found {n_papers} paper{'s' if n_papers != 1 else ''} published in the last {days_back} days! </h3>
     <table width="100%" cellpadding="0" cellspacing="10" border="0">
     """
 
