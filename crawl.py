@@ -261,7 +261,7 @@ def batch_process_papers(papers, params, batch_size=5):
             f"3. MUST study, review, or theorize on at least one of the following topics: {include_topics}\n"
             f"4. MUST NOT cover any of the following topics: {exclude_topics}\n\n"
             "If it meets ALL criteria, write a 2-sentence summary of the significance and main findings. "
-            "If it fails ANY criteria OR it scores 7 or lower, the summary MUST be exactly the word: REJECT\n"
+            "If it fails ANY criteria, the summary MUST be exactly the word: REJECT\n"
             "Respond ONLY with a valid JSON array using this exact schema: [{\"id\": int, \"summary\": \"string\"}]\n\n"
             f"Papers:\n{json.dumps(payload)}"
         )
