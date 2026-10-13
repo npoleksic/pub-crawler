@@ -13,6 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv, set_key
 import sys
 
+
 ENV_FILE = ".env"
 
 def setup_credentials():
@@ -61,6 +62,15 @@ GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+MODEL_CHAIN = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview",
+    ]
 
 def load_search_params(filename="search_parameters.txt"):
     params = {
@@ -165,19 +175,15 @@ def remove_duplicate_papers(papers):
             unique_papers.append(p)
     return unique_papers
 
+def circular_shift(lst, n):
+    if not lst:
+        return lst
+    n = n % len(lst)
+    return lst[-n:] + lst[:-n]
+
 
 def ask_gemini(prompt, expect_json=False):
-    MODEL_CHAIN = [
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash-lite",
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3-flash-preview",
-        "gemini-2.5-flash"
-    ]
+    global MODEL_CHAIN
 
     config = {"response_mime_type": "application/json"} if expect_json else None
 
@@ -186,16 +192,30 @@ def ask_gemini(prompt, expect_json=False):
             try:
                 chat = client.chats.create(model=model, config=config)
                 response = chat.send_message(prompt)
+                if i > 0:
+                    MODEL_CHAIN = circular_shift(MODEL_CHAIN, -i)
                 return response.text.strip()
 
             except errors.APIError as api_err:
                 error_msg = str(api_err).lower()
                 if "per day" in error_msg or "quota" in error_msg:
-                    print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Switching to model: {MODEL_CHAIN[i]}")
+                    if i+1 < len(MODEL_CHAIN):
+                        print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Switching to model: {MODEL_CHAIN[i+1]}")
+                    else:
+                        print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Unable to generate response.")
                     break
                 elif "high demand" in error_msg:
-                    print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i]}")
-
+                    if i+1 < len(MODEL_CHAIN):
+                        print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i+1]}")
+                    else:
+                        print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Unable to generate response.")
+                    break
+                elif "404" in error_msg:
+                    if i+1 < len(MODEL_CHAIN):
+                        print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Switching to model: {MODEL_CHAIN[i+1]}")
+                    else:
+                        print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Unable to generate response.")
+                    break
                 print(f"[WARNING][ask_gemini] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
             except Exception as err:
@@ -279,7 +299,7 @@ def batch_process_papers(papers, params, batch_size=5):
     return approved_papers
 
 
-def send_email(papers, days_back):
+def send_email(papers):
     print(f"[LOG] {len(papers)} paper(s) passed screening.")
 
     # Pre-filter papers with valid summaries
@@ -382,7 +402,6 @@ if __name__ == "__main__":
 
     search_query = get_search_query(params["SEARCH"])
 
-
     days_back = int(params["DAYS_BACK"][0])
     new_papers = find_papers(search_query, days_back=days_back)
     if new_papers:
@@ -390,7 +409,7 @@ if __name__ == "__main__":
         filtered_papers = batch_process_papers(new_papers, params)
 
         if filtered_papers:
-            send_email(filtered_papers, days_back)
+            send_email(filtered_papers)
         else:
             print("[LOG] No relevant papers remaining after LLM screening.")
     else:
