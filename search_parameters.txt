@@ -7,7 +7,7 @@ systems neuroscience
 
 # How far back to search
 [DAYS_BACK]
-3
+7
 
 
 # Terms for initial query of publications
