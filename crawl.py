@@ -186,7 +186,6 @@ def ask_gemini(prompt, expect_json=False):
             try:
                 chat = client.chats.create(model=model, config=config)
                 response = chat.send_message(prompt)
-
                 return response.text.strip()
 
             except errors.APIError as api_err:
