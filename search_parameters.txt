@@ -41,26 +41,28 @@ non-human primate
 non-human primates
 eye tracking
 motor coordination
+brain computer interface
 
 
 # Topics to include (for LLM filter)
 [INCLUDE]
+sensory perception
 predictive coding
 brain-computer interface
-monkey/human visual pathways
-vertebrate motor control or motor learning circuits
-vertebrate multisensory integration
-monkey/human cortical circuits
-monkey/human oculomotor or gaze control circuits
-monkey/human neurophysiology
-vertebrate sensorimotor circuit recording or perturbation
-monkey/human active gaze exploration or naturalistic visual behavior
+visual pathway or hierarchy
+motor control or motor learning mechanisms
+multisensory integration
+sensorimotor mechanisms
+oculomotor or gaze control mechanisms
+neurophysiology
+sensorimotor circuit recording or perturbation
+active gaze exploration or naturalistic visual behavior
 freely-moving monkey experiments
 monkey/human eye/gaze tracking methods
-functional neuroimaging during motor or visual behavior
 
 # Topics to exclude (for LLM filter)
 [EXCLUDE]
+computational studies without basis in animal models
 anatomical studies
 case studies
 clinical trials
