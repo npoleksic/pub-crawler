@@ -189,7 +189,7 @@ def ask_gemini(prompt, expect_json=False):
 
             except errors.APIError as api_err:
                 error_msg = str(api_err).lower()
-                if "per day" in error_msg or "quota" in error_msg:
+                if "per day" in error_msg or "quota" in error_msg or "high demand" in error_msg:
                     break
                 print(f"[WARNING] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
