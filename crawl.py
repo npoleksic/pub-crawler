@@ -217,7 +217,7 @@ def ask_gemini(prompt, expect_json=False):
                 time.sleep(10)
             except Exception as err:
                 print(f"[ERROR][ask_gemini]: {str(err)}")
-                break
+                return None
 
     return None
 
@@ -286,14 +286,26 @@ def batch_process_papers(papers, params, batch_size=5):
                         paper["llm_summary"] = summary
                         approved_papers.append(paper)
             except json.JSONDecodeError:
-                print("[ERROR][batch_process_papers] Failed to parse JSON from LLM. Skipping batch.".ljust(30))
-
+                print("[ERROR][batch_process_papers] Failed to parse JSON from LLM.".ljust(30))
+                return None
+            except Exception as err:
+                print(f"[ERROR][batch_process_papers] {str(err)}".ljust(30))
+                return None
+        else:
+            return None
         time.sleep(5)
+
     print(f"[LOG] Completed evaluation of {len(papers)} paper(s)!".ljust(30))
-    return approved_papers
+    if len(approved_papers) > 0:
+        return approved_papers
+    else:
+        return "NULL"
 
 
 def send_email(papers):
+    if papers is None or GMAIL_SENDER is None or GMAIL_RECIPIENT is None or GMAIL_APP_PASSWORD is None:
+        return
+
     print(f"[LOG] {len(papers)} paper(s) passed screening.")
 
     valid_papers = []
@@ -396,11 +408,18 @@ if __name__ == "__main__":
     new_papers = find_papers(search_query, days_back=days_back)
     if new_papers:
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
-        filtered_papers = batch_process_papers(new_papers, params)
-
-        if filtered_papers:
-            send_email(filtered_papers)
-        else:
-            print("[LOG] No relevant papers remaining after LLM screening.")
+        attempts = 1
+        while attempts <= 5:
+            filtered_papers = batch_process_papers(new_papers, params)
+            attempts += 1
+            if not filtered_papers and attempts <= 5:
+                print(f"[LOG][WARNING] An error occurred while filtering publications. Reattempting ({attempts}/5).")
+            elif not filtered_papers and attempts > 5:
+                print(f"[LOG][ERROR] Failed to filter publications.")
+            elif filtered_papers == "NULL":
+                print(f"[LOG] No relevant papers remaining after LLM screening.")
+            else:
+                send_email(filtered_papers)
+                break
     else:
         print("[LOG] No candidate papers found in database.")
