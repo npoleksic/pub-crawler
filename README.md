@@ -23,7 +23,7 @@ Standard password logins are disabled for automated scripts. You must generate a
 1. Go to your [Google Account Security page](https://myaccount.google.com/security).
 2. Ensure **2-Step Verification** is turned **ON**.
 3. In the search bar at the top, type **"App passwords"** and select it.
-4. Enter a custom app name (e.g., "PubMonitor") and click **Create**.
+4. Enter a custom app name (e.g., "pub-crawler") and click **Create**.
 5. Copy the 16-character password provided in the yellow box (do not include spaces when pasting it later).
 
 ## 3. Configure Your Search
