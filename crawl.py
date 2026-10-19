@@ -13,6 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv, set_key
 import sys
 
+from prompt_toolkit.key_binding.bindings.named_commands import end_of_file
 
 ENV_FILE = ".env"
 
@@ -181,10 +182,11 @@ def circular_shift(lst, n):
 
 def ask_gemini(prompt, expect_json=False):
     global MODEL_CHAIN
-
+    high_demand_limit = 10
     config = {"response_mime_type": "application/json"} if expect_json else None
 
     for i, model in enumerate(MODEL_CHAIN):
+        high_demand_counter = 0
         while True:
             try:
                 chat = client.chats.create(model=model, config=config)
@@ -202,18 +204,20 @@ def ask_gemini(prompt, expect_json=False):
                         print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Unable to generate response.")
                     break
                 elif "high demand" in error_msg:
-                    if i+1 < len(MODEL_CHAIN):
-                        print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i+1]}")
-                    else:
-                        print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Unable to generate response.")
-                    break
+                    high_demand_counter += 1
+                    if high_demand_counter > high_demand_limit:
+                        if i+1 < len(MODEL_CHAIN):
+                            print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i+1]}")
+                        else:
+                            print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Unable to generate response.")
+                        break
                 elif "404" in error_msg:
                     if i+1 < len(MODEL_CHAIN):
                         print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Switching to model: {MODEL_CHAIN[i+1]}")
                     else:
                         print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Unable to generate response.")
                     break
-                print(f"[WARNING][ask_gemini] API Rate limit hit. Pausing 10s...")
+                # print(f"[WARNING][ask_gemini] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
             except Exception as err:
                 print(f"[ERROR][ask_gemini]: {str(err)}")
@@ -405,7 +409,14 @@ if __name__ == "__main__":
     search_query = get_search_query(params["SEARCH"])
 
     days_back = int(params["DAYS_BACK"][0])
-    new_papers = find_papers(search_query, days_back=days_back)
+    times_checked = 0
+    while times_checked < 120:
+        times_checked += 1
+        new_papers = find_papers(search_query, days_back=days_back)
+        if new_papers is not None:
+            break
+        time.sleep(60)
+
     if new_papers:
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
         attempts = 1

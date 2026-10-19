@@ -9,7 +9,6 @@ systems neuroscience
 [DAYS_BACK]
 7
 
-
 # Terms for initial query of publications
 [SEARCH]
 frontal eye field
@@ -55,10 +54,12 @@ multisensory integration
 sensorimotor mechanisms
 oculomotor or gaze control mechanisms
 neurophysiology
+causal manipulation
 sensorimotor circuit recording or perturbation
 active gaze exploration or naturalistic visual behavior
 freely-moving monkey experiments
 monkey/human eye/gaze tracking methods
+
 
 # Topics to exclude (for LLM filter)
 [EXCLUDE]
