@@ -31,6 +31,9 @@ Standard password logins are disabled for automated scripts. You must generate a
 Open `search_parameters.txt` in any basic text editor (like Notepad). Define your search terms and LLM screening criteria under the bracketed headers. Lines starting with `#` are ignored, allowing you to leave notes.
 
 ```text
+[FIELD_OF_INTEREST]
+Systems neuroscience
+
 [DAYS_BACK]
 7
 
