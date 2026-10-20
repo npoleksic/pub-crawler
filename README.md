@@ -32,7 +32,7 @@ Open `search_parameters.txt` in any basic text editor (like Notepad). Define you
 
 ```text
 [FIELD_OF_INTEREST]
-Systems neuroscience
+systems neuroscience
 
 [DAYS_BACK]
 7
