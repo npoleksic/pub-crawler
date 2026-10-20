@@ -13,8 +13,6 @@ from pathlib import Path
 from dotenv import load_dotenv, set_key
 import sys
 
-from prompt_toolkit.key_binding.bindings.named_commands import end_of_file
-
 ENV_FILE = ".env"
 
 def setup_credentials():
