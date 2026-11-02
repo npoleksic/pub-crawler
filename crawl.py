@@ -215,7 +215,6 @@ def ask_gemini(prompt, expect_json=False):
                     else:
                         print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Unable to generate response.")
                     break
-                # print(f"[WARNING][ask_gemini] API Rate limit hit. Pausing 10s...")
                 time.sleep(10)
             except Exception as err:
                 print(f"[ERROR][ask_gemini]: {str(err)}")
@@ -224,11 +223,8 @@ def ask_gemini(prompt, expect_json=False):
     return None
 
 
-def batch_process_papers(papers, params, batch_size=5):
+def batch_process_papers(papers, prompt, batch_size=5):
     approved_papers = []
-    include_topics = ", ".join(params["INCLUDE"])
-    exclude_topics = ", ".join(params["EXCLUDE"])
-    field_of_interest = params["FIELD_OF_INTEREST"][0]
 
     valid_papers = [p for p in papers if p.get("abstractText") and p.get("abstractText").strip()]
     dropped_count = len(papers) - len(valid_papers)
@@ -255,20 +251,9 @@ def batch_process_papers(papers, params, batch_size=5):
                 "abstract": p.get("abstractText")
             })
 
-        prompt = (
-            "You are a rigorous scientific screener. Review the following JSON array of research papers.\n"
-            "Criteria:\n"
-            f"1. Must be strictly primary {field_of_interest} research.\n"
-            f"2. Must be a preprint or published in a reputable journal that is known for publishing high-level {field_of_interest} research.\n"
-            f"3. MUST study, review, or theorize on at least one of the following topics: {include_topics}\n"
-            f"4. MUST NOT cover any of the following topics: {exclude_topics}\n\n"
-            "If it meets ALL criteria, write a 2-sentence summary of the significance and main findings. "
-            "If it fails ANY criteria, the summary MUST be exactly the word: REJECT\n"
-            "Respond ONLY with a valid JSON array using this exact schema: [{\"id\": int, \"summary\": \"string\"}]\n\n"
-            f"Papers:\n{json.dumps(payload)}"
-        )
+        batch_prompt = prompt + f"Papers:\n{json.dumps(payload)}"
 
-        response = ask_gemini(prompt, expect_json=True)
+        response = ask_gemini(batch_prompt, expect_json=True)
 
         if response:
             try:
@@ -304,7 +289,7 @@ def batch_process_papers(papers, params, batch_size=5):
         return "NULL"
 
 
-def send_email(papers):
+def send_email(papers, days_back=7):
     if papers is None or GMAIL_SENDER is None or GMAIL_RECIPIENT is None or GMAIL_APP_PASSWORD is None:
         return
 
@@ -323,6 +308,8 @@ def send_email(papers):
     msg['From'] = GMAIL_SENDER
     msg['To'] = GMAIL_RECIPIENT
     msg['Subject'] = f"pub-crawler: {n_papers} new paper{'s' if n_papers != 1 else ''}!"
+
+    since_date = datetime.now() - timedelta(days=days_back)
 
     html_content = f"""
     <html>
@@ -343,6 +330,9 @@ def send_email(papers):
     </style>
     </head>
     <body style="font-family: Arial, sans-serif;">
+    <div style="text-align: center; margin-bottom: 10px; font-size: 16px; color: #777;">
+        {n_papers} new paper{'s' if n_papers != 1 else ''} since {since_date.strftime('%B %d, %Y')}
+    </div>
     <table width="100%" cellpadding="0" cellspacing="10" border="0">
     """
 
@@ -382,6 +372,9 @@ def send_email(papers):
 
     html_content += """
     </table>
+    <div style="text-align: center; margin-top: 20px; margin-bottom: 10px; font-size: 13px; color: #777;">
+        <a href="https://github.com/npoleksic/pub-crawler" style="color: #0b57d0; text-decoration: none;">pub-crawler source code</a>
+    </div>
     </body>
     </html>
     """
@@ -403,10 +396,26 @@ def send_email(papers):
 
 if __name__ == "__main__":
     params = load_search_params()
+    include_topics = ", ".join(params["INCLUDE"])
+    exclude_topics = ", ".join(params["EXCLUDE"])
+    field_of_interest = params["FIELD_OF_INTEREST"][0]
 
-    search_query = get_search_query(params["SEARCH"])
+    schema = "[{\"id\": int, \"summary\": \"string\"}]"
+    prompt = (
+        "You are a rigorous scientific screener. Review the following JSON array of research papers.\n"
+        "Criteria:\n"
+        f"1. Must be strictly primary {field_of_interest} research.\n"
+        f"2. Must be a preprint or published in a reputable journal that is known for publishing high-level {field_of_interest} research.\n"
+        f"3. MUST study, review, or theorize on at least one of the following topics: {include_topics}\n"
+        f"4. MUST NOT cover any of the following topics: {exclude_topics}\n\n"
+        "If it meets ALL criteria, write a 2-sentence summary of the significance and main findings. "
+        "If it fails ANY criteria, the summary MUST be exactly the word: REJECT\n"
+        f"Respond ONLY with a valid JSON array using this exact schema: {schema}\n\n"
+    )
 
     days_back = int(params["DAYS_BACK"][0])
+    search_query = get_search_query(params["SEARCH"])
+
     times_checked = 0
     while times_checked < 120:
         times_checked += 1
@@ -419,7 +428,7 @@ if __name__ == "__main__":
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
         attempts = 1
         while attempts <= 5:
-            filtered_papers = batch_process_papers(new_papers, params)
+            filtered_papers = batch_process_papers(new_papers, prompt, batch_size=5)
             attempts += 1
             if not filtered_papers and attempts <= 5:
                 print(f"[LOG][WARNING] An error occurred while filtering publications. Reattempting ({attempts}/5).")
@@ -428,7 +437,7 @@ if __name__ == "__main__":
             elif filtered_papers == "NULL":
                 print(f"[LOG] No relevant papers remaining after LLM screening.")
             else:
-                send_email(filtered_papers)
+                send_email(filtered_papers, days_back)
                 break
     else:
         print("[LOG] No candidate papers found in database.")

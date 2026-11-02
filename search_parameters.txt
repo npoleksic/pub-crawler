@@ -17,7 +17,10 @@ superior colliculus
 visual pathway
 visual hierarchy
 visual stream
+visual processing
 middle temporal area
+area MT
+FEF
 V3A
 CIP
 FST
@@ -34,17 +37,23 @@ eye movement
 eye movements
 binocular
 cerebellum
-rhesus monkey
-rhesus monkeys
-non-human primate
-non-human primates
+head direction
+primate
+primates
+monkey
+monkeys
 eye tracking
+gaze shifting
 motor coordination
 brain computer interface
-
+visual cortex
+frontal cortex
+premotor cortex
+motor cortex
 
 # Topics to include (for LLM filter)
 [INCLUDE]
+primate neurophysiology and causal manipulation
 sensory perception
 predictive coding
 brain-computer interface
@@ -53,16 +62,14 @@ motor control or motor learning mechanisms
 multisensory integration
 sensorimotor mechanisms
 oculomotor or gaze control mechanisms
-neurophysiology
-causal manipulation
 sensorimotor circuit recording or perturbation
 active gaze exploration or naturalistic visual behavior
 freely-moving monkey experiments
 monkey/human eye/gaze tracking methods
 
-
 # Topics to exclude (for LLM filter)
 [EXCLUDE]
+human studies of sports
 computational studies without basis in animal models
 anatomical studies
 case studies
