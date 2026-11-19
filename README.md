@@ -28,40 +28,87 @@ Standard password logins are disabled for automated scripts. You must generate a
 
 ## 3. Configure Your Search
 
-Open `search_parameters.txt` in any basic text editor (like Notepad). Define your search terms and LLM screening criteria under the bracketed headers. Lines starting with `#` are ignored, allowing you to leave notes.
+Open `search_parameters.txt` in any basic text editor (like Notepad). Put each item on its own line under the bracketed headers. Lines starting with `#` are ignored, allowing you to leave notes.
+
+| Section | Required | Purpose |
+|---|---|---|
+| `[DAYS_BACK]` | Yes | How many days back to search. |
+| `[SEARCH]` | Yes | Terms for the database query (matched in title or abstract). Keep these broad; the LLM does the fine filtering. |
+| `[CORE_TOPICS]` | Yes | Your main research topics. These weigh most in the LLM score. |
+| `[RELATED_TOPICS]` | No | Topics of secondary interest. These weigh less. |
+| `[PRIORITY: <name>]` | No | A ranked list, first line = highest priority. You choose the name. Add as many lists as you need, or none. |
+| `[EXCLUDE]` | No | Topics you never want. A paper is dropped only if one of these is its *main* subject. |
+
+The LLM scores each paper from 0 to 10. Papers that score 7 or higher are emailed. A paper outside your core topics, or low on a priority list, can still score high if its findings give clear insight into a core topic. All article types (primary research, reviews, methods) are treated equally unless your lists say otherwise (for example, add `review articles` to `[EXCLUDE]`).
+
+**Example: systems neuroscience**
 
 ```text
-[FIELD_OF_INTEREST]
-systems neuroscience
-
 [DAYS_BACK]
 7
 
 [SEARCH]
-frontal eye field
 superior colliculus
-active vision
+eye movements
 
-[INCLUDE]
-macaque
-single-unit recording
-microstimulation
+[CORE_TOPICS]
+oculomotor and gaze control mechanisms
+head and neck orienting movements
+
+[RELATED_TOPICS]
+motor control
+multisensory integration
+
+[PRIORITY: model organism]
+non-human primate
+human
+non-primate mammals
+invertebrates
 
 [EXCLUDE]
-fMRI
-clinical trial
-patients
-
+clinical trials
 ```
+
+**Example: cancer biology**
+
+```text
+[CORE_TOPICS]
+mRNA stability and decay in cancer
+translational control in tumor cells
+
+[PRIORITY: evidence type]
+in vivo models
+patient samples
+cell lines
+in silico analysis
+```
+
+**Example: sports medicine**
+
+```text
+[CORE_TOPICS]
+anterior cruciate ligament injury
+return-to-sport outcomes
+
+[PRIORITY: population]
+elite athletes
+recreational athletes
+general population
+
+[EXCLUDE]
+case studies
+```
+
+When you run the tool locally, it also saves a screening log (`pub-crawler_log_<date>.csv`) in the same folder. The log lists every paper it found, with its score and a one-line reason, sorted by score. Use it to see which papers just missed the cut and to adjust your topics. No log is saved when the tool runs on GitHub.
 
 ## 4. First-Time Setup & Execution
 
 Do not run the Python file directly.
 
-1. Double-click **`run_alert.bat`**.
+1. Double-click **`run_crawl.bat`**.
 2. The script will automatically check for and install the necessary background packages (`google-genai`, `requests`, `python-dotenv`).
 3. A setup wizard will appear in the command prompt window. Paste your Gemini API key, sender email, 16-character Gmail app password, and recipient email when prompted.
 4. These credentials are saved permanently to a hidden `.env` file in the same folder.
 5. The script will proceed with the search, display progress logs, send the email, and close.
 
-For all future runs, simply double-click `run_alert.bat`. It will bypass the setup wizard and execute the search immediately.
+For all future runs, simply double-click `run_crawl.bat`. It will bypass the setup wizard and execute the search immediately.

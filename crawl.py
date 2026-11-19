@@ -3,11 +3,14 @@ import smtplib
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from google import genai
-from google.genai import errors
+from google.genai import errors, types
+from pydantic import BaseModel
 import time
 import re
+import html
 from difflib import SequenceMatcher
 import json
+import csv
 import os
 from pathlib import Path
 from dotenv import load_dotenv, set_key
@@ -29,7 +32,7 @@ def setup_credentials():
     missing_keys = [key for key in required_keys if not os.environ.get(key)]
 
     if missing_keys:
-        if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdout.isatty():
+        if os.environ.get("GITHUB_ACTIONS") == "true":
             print(f"[ERROR] Missing required credentials in CI/CD environment: {', '.join(missing_keys)}")
             print("Ensure these are set in GitHub Secrets and mapped in the workflow file.")
             sys.exit(1)
@@ -69,15 +72,31 @@ MODEL_CHAIN = [
         "gemini-3-flash-preview",
     ]
 
+SCORE_CUTOFF = 7  # 0-10; papers scoring at or above this are emailed
+RUN_LOCALLY = os.environ.get("GITHUB_ACTIONS") != "true"
+
+
+class Screening(BaseModel):
+    id: int
+    reason: str
+    topic: int
+    priority: int
+    transfer: int
+    score: int
+    summary: str
+
+
 def load_search_params(filename="search_parameters.txt"):
     params = {
         "DAYS_BACK": [],
         "SEARCH": [],
-        "INCLUDE": [],
+        "CORE_TOPICS": [],
+        "RELATED_TOPICS": [],
         "EXCLUDE": [],
-        "FIELD_OF_INTEREST": []
+        "PRIORITY": {}
     }
-    current_section = None
+    legacy = {"FIELD_OF_INTEREST": "CORE_TOPICS", "INCLUDE": "RELATED_TOPICS"}
+    target = None
 
     try:
         with open(filename, "r") as f:
@@ -88,18 +107,121 @@ def load_search_params(filename="search_parameters.txt"):
                     continue
 
                 if line.startswith("[") and line.endswith("]"):
-                    section = line[1:-1]
-                    if section in params:
-                        current_section = section
+                    section = line[1:-1].strip()
+                    if section.upper().startswith("PRIORITY:"):
+                        name = section.split(":", 1)[1].strip()
+                        if not name:
+                            print(f"[ERROR][load_search_params] [PRIORITY:] needs a name, e.g. [PRIORITY: model organism]")
+                            sys.exit(1)
+                        target = params["PRIORITY"].setdefault(name, [])
+                    elif section in legacy:
+                        print(f"[ERROR][load_search_params] Section [{section}] is no longer used. Replace it with [{legacy[section]}] (see README).")
+                        sys.exit(1)
+                    elif section in params and section != "PRIORITY":
+                        target = params[section]
+                    else:
+                        print(f"[WARNING][load_search_params] Unknown section [{section}] ignored.")
+                        target = None
                     continue
 
-                if current_section:
-                    params[current_section].append(line)
+                if target is not None:
+                    target.append(line)
 
     except FileNotFoundError:
         print(f"[ERROR][load_search_params] Configuration file '{filename}' not found.")
+        sys.exit(1)
+
+    params["PRIORITY"] = {k: v for k, v in params["PRIORITY"].items() if v}
+    missing = [k for k in ("CORE_TOPICS", "DAYS_BACK", "SEARCH") if not params[k]]
+    if missing:
+        print(f"[ERROR][load_search_params] Empty or missing section(s) in '{filename}': {', '.join(missing)}")
+        sys.exit(1)
 
     return params
+
+
+def build_prompt(params):
+    has_priority = bool(params["PRIORITY"])
+    lines = [
+        "You are screening newly released research papers for a researcher. Score how relevant each paper is to the researcher's interests.",
+        "",
+        "RESEARCHER'S INTERESTS",
+        f"Core topics (highest weight): {'; '.join(params['CORE_TOPICS'])}",
+    ]
+    if params["RELATED_TOPICS"]:
+        lines.append(f"Related topics (lower weight): {'; '.join(params['RELATED_TOPICS'])}")
+    for name, items in params["PRIORITY"].items():
+        lines.append(f"Preferred {name}, from highest to lowest priority: {' > '.join(items)}")
+    if params["EXCLUDE"]:
+        lines.append(f"Excluded topics: {'; '.join(params['EXCLUDE'])}")
+
+    rules = ["Core topics weigh most. Related topics weigh less. A paper on neither scores low."]
+    if has_priority:
+        rules.append("For each preferred list, a paper that matches a higher-ranked item scores higher than one that matches a lower-ranked item.")
+    rules += [
+        "A paper outside the core topics" + (", or that matches a lower-ranked item on a preferred list," if has_priority else "")
+        + " can still score high if its findings give clear, transferable insight into a core topic.",
+        "Score 0 if an excluded topic is the main subject of the paper. A passing mention of an excluded topic does not count.",
+        "Treat all article types (primary research, reviews, methods, theory) equally, unless the interests above say otherwise.",
+        "Score 0 if the paper is not a preprint and is not published in a reputable journal known for publishing high-level research on these topics.",
+    ]
+    lines += ["", "SCORING RULES"] + [f"{i}. {r}" for i, r in enumerate(rules, 1)]
+    lines += [
+        "",
+        "SCORE SCALE (0-10)",
+        "9-10: directly addresses a core topic" + (" and matches the top of each preferred list" if has_priority else "") + ".",
+        "7-8: clearly relevant: addresses a core topic" + (" with lower preference" if has_priority else "")
+        + ", or a related topic with strong transferable insight into a core topic.",
+        "4-6: partly relevant: a related topic, or a weak connection to a core topic.",
+        "1-3: marginal connection only.",
+        "0: unrelated, excluded topic, or unreliable journal.",
+        "",
+        "OUTPUT: one entry per paper, with the paper's id. Fill the fields in this order:",
+        "- reason: one sentence that states the main subject of the paper and how it relates to the interests.",
+        "- topic: 0-10, relevance to the core and related topics.",
+        "- priority: 0-10, fit to the preferred lists." if has_priority else "- priority: always 10.",
+        "- transfer: 0-10, value of transferable insight into a core topic.",
+        "- score: 0-10, overall relevance. Use your judgment; this is not an average of the other fields.",
+        f"- summary: if score is {SCORE_CUTOFF} or higher, a 2-sentence summary of the significance and main findings. Otherwise an empty string.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def paper_journal(p):
+    return (
+            p.get("journalInfo", {}).get("journal", {}).get("title") or
+            p.get("journalTitle") or
+            p.get("bookOrReportDetails", {}).get("publisher") or
+            "Unknown Source"
+    )
+
+
+def paper_link(p):
+    doi = p.get("doi", "")
+    return f"https://doi.org/{doi}" if doi else f"https://europepmc.org/article/{p.get('source', '')}/{p.get('id', '')}"
+
+
+def write_log(papers):
+    if not RUN_LOCALLY:
+        return
+    path = Path(__file__).resolve().parent / f"pub-crawler_log_{datetime.now():%Y-%m-%d_%H%M}.csv"
+    rows = sorted(papers, key=lambda p: p.get("llm_score", -1), reverse=True)
+    try:
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["score", "passed", "title", "reason", "link"])
+            for p in rows:
+                w.writerow([
+                    p.get("llm_score", ""),
+                    "Y" if p.get("llm_summary") else "N",
+                    re.sub(r"<[^>]+>", "", p.get("title", "")),
+                    p.get("llm_reason", ""),
+                    paper_link(p)
+                ])
+        print(f"[LOG] Screening log saved: {path.name}")
+    except OSError as err:
+        print(f"[WARNING][write_log] Could not save screening log: {err}")
 
 
 def get_search_query(search_terms):
@@ -107,7 +229,7 @@ def get_search_query(search_terms):
     return f"({formatted_terms}) AND (SRC:MED OR SRC:PPR OR SRC:PMC)"
 
 
-def find_papers(query, days_back=7):
+def find_papers(query, days_back=7, max_results=5000):
     today = datetime.now()
     past_date = today - timedelta(days=days_back)
     date_str = f"[{past_date.strftime('%Y-%m-%d')} TO {today.strftime('%Y-%m-%d')}]"
@@ -117,176 +239,192 @@ def find_papers(query, days_back=7):
         "query": f'{query} AND FIRST_PDATE:{date_str}',
         "format": "json",
         "resultType": "core",
-        "pageSize": 1000
+        "pageSize": 1000,
+        "cursorMark": "*"
     }
-    attempts = 0
     results = []
 
-    while attempts <= 5:
-        try:
-            attempts += 1
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            results = data.get("resultList", {}).get("result", [])
-            break
-        except requests.exceptions.HTTPError as http_err:
-            if attempts > 5:
-                print(f"[ERROR][find_papers] HTTP ERROR: {http_err}")
-            else:
-                print(f"[WARNING][find_papers] Pub. database API call failed. Reattempting ({attempts}/5)...")
-                time.sleep(10)
+    while True:
+        data = None
+        for attempt in range(1, 6):
+            try:
+                response = requests.get(url, params=params, timeout=60)
+                response.raise_for_status()
+                data = response.json()
+                break
+            except (requests.exceptions.RequestException, ValueError) as err:
+                print(f"[WARNING][find_papers] Pub. database API call failed ({attempt}/5): {err}")
+                if attempt < 5:
+                    time.sleep(10)
+        if data is None:
+            print("[ERROR][find_papers] Pub. database unreachable.")
+            return None
 
-    all_papers = [p for p in results if p.get("doi")]
+        if params["cursorMark"] == "*":
+            print(f"[LOG] {data.get('hitCount', 0)} hit(s) in database.")
+
+        page = data.get("resultList", {}).get("result", [])
+        results.extend(page)
+        next_cursor = data.get("nextCursorMark")
+        if not page or not next_cursor or next_cursor == params["cursorMark"]:
+            break
+        if len(results) >= max_results:
+            print(f"[WARNING][find_papers] Result limit ({max_results}) reached. Remaining hits were not retrieved.")
+            break
+        params["cursorMark"] = next_cursor
+
+    all_papers = [p for p in results[:max_results] if p.get("doi")]
     papers = remove_duplicate_papers(all_papers)
     return papers
 
 
-def is_similar_title(title1, title2, threshold=0.85):
-    norm1 = re.sub(r'[^a-z0-9]', '', title1.lower())
-    norm2 = re.sub(r'[^a-z0-9]', '', title2.lower())
+def normalize_title(title):
+    return re.sub(r'[^a-z0-9]', '', (title or "").lower())
+
+
+def is_similar_title(norm1, norm2, sm, threshold=0.85):
+    if not norm1 or not norm2:
+        return False
     if norm1 in norm2 or norm2 in norm1:
         return True
-    return SequenceMatcher(None, norm1, norm2).ratio() > threshold
+    if 2 * min(len(norm1), len(norm2)) / (len(norm1) + len(norm2)) <= threshold:
+        return False
+    sm.set_seq1(norm1)
+    return sm.quick_ratio() > threshold and sm.ratio() > threshold
 
 
 def remove_duplicate_papers(papers):
-    unique_papers = []
+    unique = []
     for p in papers:
         is_dup = False
-        current_title = p.get("title", "")
+        current_norm = normalize_title(p.get("title"))
         current_doi = p.get("doi", "")
-        for up in unique_papers:
+        for k, (up_norm, up_sm, up) in enumerate(unique):
             if current_doi and current_doi == up.get("doi"):
                 is_dup = True
                 break
-            if current_title and up.get("title"):
-                if is_similar_title(current_title, up.get("title")):
-                    is_dup = True
-                    if p.get("source") in ["MED", "PMC"] and up.get("source") == "PPR":
-                        unique_papers.remove(up)
-                        unique_papers.append(p)
-                    break
+            if is_similar_title(current_norm, up_norm, up_sm):
+                is_dup = True
+                if p.get("source") in ["MED", "PMC"] and up.get("source") == "PPR":
+                    unique[k] = (current_norm, SequenceMatcher(None, "", current_norm), p)
+                break
         if not is_dup:
-            unique_papers.append(p)
-    return unique_papers
-
-def circular_shift(lst, n):
-    if not lst:
-        return lst
-    n = n % len(lst)
-    return lst[-n:] + lst[:-n]
+            unique.append((current_norm, SequenceMatcher(None, "", current_norm), p))
+    return [p for _, _, p in unique]
 
 
-def ask_gemini(prompt, expect_json=False):
-    global MODEL_CHAIN
-    high_demand_limit = 10
-    config = {"response_mime_type": "application/json"} if expect_json else None
+def ask_gemini(prompt, schema=None):
+    retry_limit = 10
+    config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema) if schema else None
 
-    for i, model in enumerate(MODEL_CHAIN):
-        high_demand_counter = 0
-        while True:
+    for model in list(MODEL_CHAIN):
+        next_idx = MODEL_CHAIN.index(model) + 1
+        switch_msg = f"Switching to model: {MODEL_CHAIN[next_idx]}" if next_idx < len(MODEL_CHAIN) else "No models remaining."
+        for attempt in range(1, retry_limit + 1):
             try:
-                chat = client.chats.create(model=model, config=config)
-                response = chat.send_message(prompt)
-                if i > 0:
-                    MODEL_CHAIN = circular_shift(MODEL_CHAIN, -i)
-                return response.text.strip()
+                response = client.models.generate_content(model=model, contents=prompt, config=config)
+                result = response.parsed if schema else response.text
+                if result is None:
+                    print(f"[WARNING][ask_gemini] Model: {model} returned an empty or invalid response.")
+                return result
 
-            except errors.APIError as api_err:
-                error_msg = str(api_err).lower()
-                if "per day" in error_msg or "quota" in error_msg:
-                    if i+1 < len(MODEL_CHAIN):
-                        print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Switching to model: {MODEL_CHAIN[i+1]}")
-                    else:
-                        print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. Unable to generate response.")
-                    break
-                elif "high demand" in error_msg:
-                    high_demand_counter += 1
-                    if high_demand_counter > high_demand_limit:
-                        if i+1 < len(MODEL_CHAIN):
-                            print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Switching to model: {MODEL_CHAIN[i+1]}")
-                        else:
-                            print(f"[WARNING][ask_gemini] Model: {model} is in high demand. Unable to generate response.")
-                        break
-                elif "404" in error_msg:
-                    if i+1 < len(MODEL_CHAIN):
-                        print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Switching to model: {MODEL_CHAIN[i+1]}")
-                    else:
-                        print(f"[WARNING][ask_gemini] Model: {model} is no longer in use. Unable to generate response.")
-                    break
-                time.sleep(10)
             except Exception as err:
-                print(f"[ERROR][ask_gemini]: {str(err)}")
-                return None
+                code = getattr(err, "code", None)
+                msg = str(err).lower()
+                if code in (401, 403) or (code == 400 and "api key" in msg):
+                    print(f"[ERROR][ask_gemini] Gemini request refused ({code}). Check GEMINI_API_KEY: {err}")
+                    sys.exit(1)
+                if code == 429 and ("per day" in msg or "perday" in msg):
+                    print(f"[WARNING][ask_gemini] Daily rate limit exceeded for model: {model}. {switch_msg}")
+                    MODEL_CHAIN.remove(model)
+                    break
+                if code in (400, 404):
+                    print(f"[WARNING][ask_gemini] Model: {model} is unavailable or rejected the request ({code}). {switch_msg}")
+                    MODEL_CHAIN.remove(model)
+                    break
+                if attempt == retry_limit:
+                    print(f"[WARNING][ask_gemini] Model: {model} failed {retry_limit} times ({code}: {err}). {switch_msg}")
+                    break
+                time.sleep(30 if code == 429 else 15)
 
     return None
 
 
-def batch_process_papers(papers, prompt, batch_size=5):
+def batch_process_papers(papers, prompt, batch_size=5, max_attempts=3, max_consecutive_failures=3):
     approved_papers = []
+    skipped_count = 0
+    consecutive_failures = 0
 
     valid_papers = [p for p in papers if p.get("abstractText") and p.get("abstractText").strip()]
     dropped_count = len(papers) - len(valid_papers)
+    valid_ids = {id(p) for p in valid_papers}
+    for p in papers:
+        if id(p) not in valid_ids:
+            p["llm_reason"] = "No abstract"
     if dropped_count > 0:
         print(f"[LOG] Dropped {dropped_count} paper(s) before screening due to missing abstracts.")
 
-
     for i in range(0, len(valid_papers), batch_size):
+        if not MODEL_CHAIN or consecutive_failures >= max_consecutive_failures:
+            reason = "All models are exhausted or unavailable" if not MODEL_CHAIN else f"{consecutive_failures} consecutive batches failed"
+            print(f"[ERROR][batch_process_papers] {reason}. Stopping screening.")
+            skipped_count += len(valid_papers) - i
+            for p in valid_papers[i:]:
+                p["llm_reason"] = "Not screened (LLM error)"
+            break
+
         print(f"[LOG] Evaluated {i} out of {len(valid_papers)} paper(s)...".ljust(30), end="\r", flush=True)
         batch = valid_papers[i:i + batch_size]
 
         payload = []
         for idx, p in enumerate(batch):
-            journal = (
-                    p.get("journalInfo", {}).get("journal", {}).get("title") or
-                    p.get("journalTitle") or
-                    p.get("bookOrReportDetails", {}).get("publisher") or
-                    "Unknown Source"
-            )
             payload.append({
                 "id": idx,
                 "title": p.get("title", "No Title"),
-                "journal": journal,
+                "journal": paper_journal(p),
                 "abstract": p.get("abstractText")
             })
 
         batch_prompt = prompt + f"Papers:\n{json.dumps(payload)}"
 
-        response = ask_gemini(batch_prompt, expect_json=True)
+        results = None
+        for attempt in range(1, max_attempts + 1):
+            results = ask_gemini(batch_prompt, schema=list[Screening])
+            if results is not None or not MODEL_CHAIN:
+                break
+            print(f"[WARNING][batch_process_papers] Batch {i // batch_size + 1} failed ({attempt}/{max_attempts}).")
 
-        if response:
-            try:
-                results = json.loads(response)
-                for res in results:
-                    summary = res.get("summary", "REJECT").strip()
-                    summary_lower = summary.lower()
+        if results is None:
+            print(f"[WARNING][batch_process_papers] Skipping batch {i // batch_size + 1} ({len(batch)} paper(s)).")
+            skipped_count += len(batch)
+            consecutive_failures += 1
+            for p in batch:
+                p["llm_reason"] = "Not screened (LLM error)"
+            continue
 
-                    is_rejected = (
-                            "reject" in summary_lower or
-                            "no abstract" in summary_lower or
-                            len(summary) < 30
-                    )
-
-                    if not is_rejected:
-                        paper = batch[res["id"]]
-                        paper["llm_summary"] = summary
-                        approved_papers.append(paper)
-            except json.JSONDecodeError:
-                print("[ERROR][batch_process_papers] Failed to parse JSON from LLM.".ljust(30))
-                return None
-            except Exception as err:
-                print(f"[ERROR][batch_process_papers] {str(err)}".ljust(30))
-                return None
-        else:
-            return None
+        consecutive_failures = 0
+        scored = {}
+        for res in results:
+            if 0 <= res.id < len(batch) and res.id not in scored:
+                scored[res.id] = res
+        for idx, p in enumerate(batch):
+            res = scored.get(idx)
+            if res is None:
+                p["llm_reason"] = "Not scored (missing from LLM output)"
+                continue
+            p["llm_score"] = max(0, min(10, res.score))
+            p["llm_reason"] = res.reason.strip()
+            if p["llm_score"] >= SCORE_CUTOFF:
+                p["llm_summary"] = res.summary.strip() or p["llm_reason"]
+                approved_papers.append(p)
         time.sleep(5)
 
-    print(f"[LOG] Completed evaluation of {len(papers)} paper(s)!".ljust(30))
-    if len(approved_papers) > 0:
-        return approved_papers
-    else:
-        return "NULL"
+    print(f"[LOG] Completed evaluation of {len(valid_papers)} paper(s)!".ljust(30))
+    if skipped_count:
+        print(f"[WARNING][batch_process_papers] {skipped_count} paper(s) could not be screened and were skipped.")
+        if skipped_count == len(valid_papers):
+            return None
+    return approved_papers
 
 
 def send_email(papers, days_back=7):
@@ -342,16 +480,10 @@ def send_email(papers, days_back=7):
             if i + j < n_papers:
                 p = valid_papers[i + j]
                 title = p.get("title", "No Title")
-                journal = (
-                        p.get("journalInfo", {}).get("journal", {}).get("title") or
-                        p.get("journalTitle") or
-                        p.get("bookOrReportDetails", {}).get("publisher") or
-                        "Unknown Source"
-                )
-                authors = p.get("authorString", "Unknown Authors")
-                doi = p.get("doi", "")
-                link = f"https://doi.org/{doi}" if doi else f"https://europepmc.org/article/{p.get('source', '')}/{p.get('id', '')}"
-                summary = p.get("llm_summary")
+                journal = html.escape(paper_journal(p))
+                authors = html.escape(p.get("authorString", "Unknown Authors"))
+                link = html.escape(paper_link(p))
+                summary = html.escape(p.get("llm_summary"))
 
                 html_content += f"""
                 <td class="tile" width="50%" valign="top" style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #fafafa;">
@@ -396,48 +528,26 @@ def send_email(papers, days_back=7):
 
 if __name__ == "__main__":
     params = load_search_params()
-    include_topics = ", ".join(params["INCLUDE"])
-    exclude_topics = ", ".join(params["EXCLUDE"])
-    field_of_interest = params["FIELD_OF_INTEREST"][0]
-
-    schema = "[{\"id\": int, \"summary\": \"string\"}]"
-    prompt = (
-        "You are a rigorous scientific screener. Review the following JSON array of research papers.\n"
-        "Criteria:\n"
-        f"1. Must be strictly primary {field_of_interest} research.\n"
-        f"2. Must be a preprint or published in a reputable journal that is known for publishing high-level {field_of_interest} research.\n"
-        f"3. MUST study, review, or theorize on at least one of the following topics: {include_topics}\n"
-        f"4. MUST NOT cover any of the following topics: {exclude_topics}\n\n"
-        "If it meets ALL criteria, write a 2-sentence summary of the significance and main findings. "
-        "If it fails ANY criteria, the summary MUST be exactly the word: REJECT\n"
-        f"Respond ONLY with a valid JSON array using this exact schema: {schema}\n\n"
-    )
+    prompt = build_prompt(params)
 
     days_back = int(params["DAYS_BACK"][0])
     search_query = get_search_query(params["SEARCH"])
 
-    times_checked = 0
-    while times_checked < 120:
-        times_checked += 1
-        new_papers = find_papers(search_query, days_back=days_back)
-        if new_papers is not None:
-            break
-        time.sleep(60)
+    new_papers = find_papers(search_query, days_back=days_back)
+    if new_papers is None:
+        sys.exit(1)
 
     if new_papers:
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
-        attempts = 1
-        while attempts <= 5:
-            filtered_papers = batch_process_papers(new_papers, prompt, batch_size=5)
-            attempts += 1
-            if not filtered_papers and attempts <= 5:
-                print(f"[LOG][WARNING] An error occurred while filtering publications. Reattempting ({attempts}/5).")
-            elif not filtered_papers and attempts > 5:
-                print(f"[LOG][ERROR] Failed to filter publications.")
-            elif filtered_papers == "NULL":
-                print(f"[LOG] No relevant papers remaining after LLM screening.")
-            else:
-                send_email(filtered_papers, days_back)
-                break
+        filtered_papers = batch_process_papers(new_papers, prompt, batch_size=5)
+        write_log(new_papers)
+        if filtered_papers is None:
+            print("[LOG][ERROR] Failed to filter publications.")
+            sys.exit(1)
+        elif not filtered_papers:
+            print("[LOG] No relevant papers remaining after LLM screening.")
+        else:
+            filtered_papers.sort(key=lambda p: p["llm_score"], reverse=True)
+            send_email(filtered_papers, days_back)
     else:
         print("[LOG] No candidate papers found in database.")

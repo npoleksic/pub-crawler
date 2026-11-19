@@ -1,15 +1,13 @@
 # ==========================================
 # PUB-CRAWLER SEARCH CONFIGURATION
 # ==========================================
+# Lines starting with # are ignored. Put each item on its own line.
 
-[FIELD_OF_INTEREST]
-systems neuroscience
-
-# How far back to search
+# How many days back to search
 [DAYS_BACK]
 7
 
-# Terms for initial query of publications
+# Terms for the database query (matched in title or abstract)
 [SEARCH]
 frontal eye field
 frontal eye fields
@@ -51,27 +49,42 @@ frontal cortex
 premotor cortex
 motor cortex
 
-# Topics to include (for LLM filter)
-[INCLUDE]
+# Main research topics. Highest weight in LLM scoring. (Required)
+[CORE_TOPICS]
+3D vision and binocular depth perception
+sensory transformations along visual cortex
+oculomotor and gaze control mechanisms
+freely-moving monkey experiments
+eye-head coordination
+sensorimotor transformations for vision and orienting
+active gaze exploration or naturalistic visual behavior
+primate eye/gaze tracking methods
+Frontal eye fields, area MT, area V3A, superior colliculus, LIP, CIP, FST
+cortical oscillations in primates for working memory and visual behavior
+
+# Topics of secondary interest. Lower weight in LLM scoring. (Optional)
+[RELATED_TOPICS]
 primate neurophysiology and causal manipulation
 sensory perception
 predictive coding
-brain-computer interface
-visual pathway or hierarchy
 motor control or motor learning mechanisms
 multisensory integration
-sensorimotor mechanisms
-oculomotor or gaze control mechanisms
 sensorimotor circuit recording or perturbation
-active gaze exploration or naturalistic visual behavior
-freely-moving monkey experiments
-monkey/human eye/gaze tracking methods
+higher-order brain function in primates
 
-# Topics to exclude (for LLM filter)
+# Ranked preference lists. Name the list in the header. First line = highest priority.
+# (Optional. Add as many lists as you need, or none.)
+[PRIORITY: model organism]
+non-human primate
+human
+non-primate mammals
+non-mammalian vertebrates
+invertebrates
+
+# Topics to exclude. A paper scores 0 only if one of these is its MAIN subject. (Optional)
 [EXCLUDE]
 human studies of sports
 computational studies without basis in animal models
-anatomical studies
 case studies
 clinical trials
 human psychophysics (unless vision or eye movement related)
@@ -80,7 +93,7 @@ stroke
 Alzheimer's
 epilepsy
 speech production
-language processing
+reading or auditory language processing
 observational studies
 organoids
 molecular mechanisms
