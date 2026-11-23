@@ -73,6 +73,8 @@ EUROPEPMC_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 OPENALEX_URL = "https://api.openalex.org/works"
 COVERAGE_THRESHOLD = 0.9  # use OpenAlex too if Europe PMC has less than this share of the OpenAlex sample
 MIN_PROBE_SIZE = 20       # smaller samples are too noisy to judge; use both sources
+HIGH_DEMAND_PATIENCE = 600  # seconds each model waits on high demand (500/503) before switching
+MODEL_COOLDOWN = 600        # seconds a model is skipped after it runs out of high-demand patience
 OPENALEX_EXCLUDED_TYPES = ["dataset", "software", "supplementary-materials", "paratext", "dissertation"]
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -451,14 +453,24 @@ def remove_duplicate_papers(papers):
     return [p for _, _, p in unique]
 
 
+class GeminiOutage(Exception):
+    pass
+
+
+COOLDOWN_UNTIL = {}
+
+
 def ask_gemini(prompt, schema=None):
     retry_limit = 10
     config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema) if schema else None
 
-    for model in list(MODEL_CHAIN):
-        next_idx = MODEL_CHAIN.index(model) + 1
-        switch_msg = f"Switching to model: {MODEL_CHAIN[next_idx]}" if next_idx < len(MODEL_CHAIN) else "No models remaining."
-        for attempt in range(1, retry_limit + 1):
+    now = time.monotonic()
+    order = [m for m in MODEL_CHAIN if COOLDOWN_UNTIL.get(m, 0) <= now] + [m for m in MODEL_CHAIN if COOLDOWN_UNTIL.get(m, 0) > now]
+
+    for k, model in enumerate(order):
+        switch_msg = f"Switching to model: {order[k + 1]}" if k + 1 < len(order) else "No models remaining."
+        attempts, busy_attempts, waited = 0, 0, 0
+        while True:
             try:
                 response = client.models.generate_content(model=model, contents=prompt, config=config)
                 result = response.parsed if schema else response.text
@@ -480,23 +492,27 @@ def ask_gemini(prompt, schema=None):
                     print(f"[WARNING][ask_gemini] Model: {model} is unavailable or rejected the request ({code}). {switch_msg}")
                     MODEL_CHAIN.remove(model)
                     break
-                if attempt == retry_limit:
+                if code in (500, 503):
+                    if waited >= HIGH_DEMAND_PATIENCE:
+                        COOLDOWN_UNTIL[model] = time.monotonic() + MODEL_COOLDOWN
+                        print(f"[WARNING][ask_gemini] Model: {model} still in high demand after {waited} s. Skipping it for {MODEL_COOLDOWN} s. {switch_msg}")
+                        break
+                    busy_attempts += 1
+                    wait = min(10 * 2 ** (busy_attempts - 1), 60, HIGH_DEMAND_PATIENCE - waited)
+                    print(f"[WARNING][ask_gemini] High demand on {model} ({code}). Waiting {wait} s (waited {waited}/{HIGH_DEMAND_PATIENCE} s).")
+                    time.sleep(wait)
+                    waited += wait
+                    continue
+                attempts += 1
+                if attempts >= retry_limit:
                     print(f"[WARNING][ask_gemini] Model: {model} failed {retry_limit} times ({code}: {err}). {switch_msg}")
                     break
+                time.sleep(30 if code == 429 else 15)
 
-                if code == 429:
-                    sleep_time = 30
-                elif "lite" in model:
-                    sleep_time = 5
-                else:
-                    sleep_time = 15
-
-                time.sleep(sleep_time)
-
-    return None
+    raise GeminiOutage()
 
 
-def batch_process_papers(papers, prompt, batch_size=5, max_attempts=3, max_consecutive_failures=3):
+def batch_process_papers(papers, prompt, batch_size=20, max_attempts=3, max_consecutive_failures=3):
     approved_papers = []
     skipped_count = 0
     consecutive_failures = 0
@@ -534,11 +550,23 @@ def batch_process_papers(papers, prompt, batch_size=5, max_attempts=3, max_conse
         batch_prompt = prompt + f"Papers:\n{json.dumps(payload)}"
 
         results = None
+        outage = False
         for attempt in range(1, max_attempts + 1):
-            results = ask_gemini(batch_prompt, schema=list[Screening])
-            if results is not None or not MODEL_CHAIN:
+            try:
+                results = ask_gemini(batch_prompt, schema=list[Screening])
+            except GeminiOutage:
+                outage = True
+                break
+            if results is not None:
                 break
             print(f"[WARNING][batch_process_papers] Batch {i // batch_size + 1} failed ({attempt}/{max_attempts}).")
+
+        if outage:
+            print("[ERROR][batch_process_papers] All models failed or are exhausted. Stopping screening.")
+            skipped_count += len(valid_papers) - i
+            for p in valid_papers[i:]:
+                p["llm_reason"] = "Not screened (LLM error)"
+            break
 
         if results is None:
             print(f"[WARNING][batch_process_papers] Skipping batch {i // batch_size + 1} ({len(batch)} paper(s)).")
@@ -683,7 +711,7 @@ if __name__ == "__main__":
 
     if new_papers:
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
-        filtered_papers = batch_process_papers(new_papers, prompt, batch_size=5)
+        filtered_papers = batch_process_papers(new_papers, prompt, batch_size=20)
         write_log(new_papers)
         if filtered_papers is None:
             print("[LOG][ERROR] Failed to filter publications.")
