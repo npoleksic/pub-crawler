@@ -13,6 +13,7 @@ import json
 import csv
 import os
 from pathlib import Path
+from urllib.parse import quote
 from dotenv import load_dotenv, set_key
 import sys
 
@@ -53,18 +54,33 @@ def setup_credentials():
         print("\n[LOG] Setup complete! Keys saved to .env file.")
         print("=" * 45 + "\n")
 
+    if "OPENALEX_API_KEY" not in os.environ and os.environ.get("GITHUB_ACTIONS") != "true":
+        val = input("Paste your OpenAlex API Key (optional, recommended outside the life sciences; press Enter to skip): ").strip()
+        if not Path(ENV_FILE).exists():
+            Path(ENV_FILE).touch()
+        set_key(ENV_FILE, "OPENALEX_API_KEY", val)
+        os.environ["OPENALEX_API_KEY"] = val
+
 setup_credentials()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GMAIL_SENDER = os.environ.get("GMAIL_SENDER")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 GMAIL_RECIPIENT = os.environ.get("GMAIL_RECIPIENT")
+OPENALEX_API_KEY = os.environ.get("OPENALEX_API_KEY") or None
+
+EUROPEPMC_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+OPENALEX_URL = "https://api.openalex.org/works"
+COVERAGE_THRESHOLD = 0.9  # use OpenAlex too if Europe PMC has less than this share of the OpenAlex sample
+MIN_PROBE_SIZE = 20       # smaller samples are too noisy to judge; use both sources
+OPENALEX_EXCLUDED_TYPES = ["dataset", "software", "supplementary-materials", "paratext", "dissertation"]
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 MODEL_CHAIN = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
+        "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
@@ -140,8 +156,9 @@ def load_search_params(filename="search_parameters.txt"):
     return params
 
 
-def build_prompt(params):
+def build_prompt(params, include_conferences=False):
     has_priority = bool(params["PRIORITY"])
+    venue = "journal or conference" if include_conferences else "journal"
     lines = [
         "You are screening newly released research papers for a researcher. Score how relevant each paper is to the researcher's interests.",
         "",
@@ -163,7 +180,8 @@ def build_prompt(params):
         + " can still score high if its findings give clear, transferable insight into a core topic.",
         "Score 0 if an excluded topic is the main subject of the paper. A passing mention of an excluded topic does not count.",
         "Treat all article types (primary research, reviews, methods, theory) equally, unless the interests above say otherwise.",
-        "Score 0 if the paper is not a preprint and is not published in a reputable journal known for publishing high-level research on these topics.",
+        "Score 0 if the entry is not a paper: a deposited dataset, a code or software release, supplementary material, or a thesis or dissertation. A paper that describes a dataset or software is a paper.",
+        f"Score 0 if the paper is not a preprint and is not published in a reputable {venue} known for publishing high-level research on these topics.",
     ]
     lines += ["", "SCORING RULES"] + [f"{i}. {r}" for i, r in enumerate(rules, 1)]
     lines += [
@@ -174,7 +192,7 @@ def build_prompt(params):
         + ", or a related topic with strong transferable insight into a core topic.",
         "4-6: partly relevant: a related topic, or a weak connection to a core topic.",
         "1-3: marginal connection only.",
-        "0: unrelated, excluded topic, or unreliable journal.",
+        f"0: unrelated, excluded topic, or unreliable {venue}.",
         "",
         "OUTPUT: one entry per paper, with the paper's id. Fill the fields in this order:",
         "- reason: one sentence that states the main subject of the paper and how it relates to the interests.",
@@ -229,14 +247,32 @@ def get_search_query(search_terms):
     return f"({formatted_terms}) AND (SRC:MED OR SRC:PPR OR SRC:PMC)"
 
 
-def find_papers(query, days_back=7, max_results=5000):
-    today = datetime.now()
-    past_date = today - timedelta(days=days_back)
-    date_str = f"[{past_date.strftime('%Y-%m-%d')} TO {today.strftime('%Y-%m-%d')}]"
+def get_json(url, params, label, attempts=5):
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, params=params, timeout=60)
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.RequestException, ValueError) as err:
+            msg = str(err).replace(OPENALEX_API_KEY, "***") if OPENALEX_API_KEY else str(err)
+            print(f"[WARNING][{label}] API call failed ({attempt}/{attempts}): {msg}")
+            status = getattr(getattr(err, "response", None), "status_code", None)
+            if status and 400 <= status < 500 and status != 429:
+                break
+            if attempt < attempts:
+                time.sleep(10)
+    return None
 
-    url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+
+def date_window(days_back):
+    today = datetime.now()
+    return (today - timedelta(days=days_back)).strftime('%Y-%m-%d'), today.strftime('%Y-%m-%d')
+
+
+def fetch_europepmc(query, days_back, max_results):
+    start, end = date_window(days_back)
     params = {
-        "query": f'{query} AND FIRST_PDATE:{date_str}',
+        "query": f'{query} AND FIRST_PDATE:[{start} TO {end}]',
         "format": "json",
         "resultType": "core",
         "pageSize": 1000,
@@ -245,23 +281,13 @@ def find_papers(query, days_back=7, max_results=5000):
     results = []
 
     while True:
-        data = None
-        for attempt in range(1, 6):
-            try:
-                response = requests.get(url, params=params, timeout=60)
-                response.raise_for_status()
-                data = response.json()
-                break
-            except (requests.exceptions.RequestException, ValueError) as err:
-                print(f"[WARNING][find_papers] Pub. database API call failed ({attempt}/5): {err}")
-                if attempt < 5:
-                    time.sleep(10)
+        data = get_json(EUROPEPMC_URL, params, "fetch_europepmc")
         if data is None:
-            print("[ERROR][find_papers] Pub. database unreachable.")
+            print("[ERROR][fetch_europepmc] Europe PMC unreachable.")
             return None
 
         if params["cursorMark"] == "*":
-            print(f"[LOG] {data.get('hitCount', 0)} hit(s) in database.")
+            print(f"[LOG] Europe PMC: {data.get('hitCount', 0)} hit(s).")
 
         page = data.get("resultList", {}).get("result", [])
         results.extend(page)
@@ -269,13 +295,125 @@ def find_papers(query, days_back=7, max_results=5000):
         if not page or not next_cursor or next_cursor == params["cursorMark"]:
             break
         if len(results) >= max_results:
-            print(f"[WARNING][find_papers] Result limit ({max_results}) reached. Remaining hits were not retrieved.")
+            print(f"[WARNING][fetch_europepmc] Result limit ({max_results}) reached. Remaining hits were not retrieved.")
             break
         params["cursorMark"] = next_cursor
 
-    all_papers = [p for p in results[:max_results] if p.get("doi")]
+    return results[:max_results]
+
+
+def openalex_queries(search_terms, max_len=2500):
+    def join(terms):
+        return " OR ".join('"' + t.replace('"', '') + '"' for t in terms)
+    chunks, current = [], []
+    for term in search_terms:
+        if current and len(quote(join(current + [term]))) > max_len:
+            chunks.append(current)
+            current = []
+        current.append(term)
+    if current:
+        chunks.append(current)
+    return [join(c) for c in chunks]
+
+
+def openalex_doi(w):
+    return (w.get("doi") or "").replace("https://doi.org/", "").lower()
+
+
+def openalex_to_paper(w):
+    positions = sorted((pos, word) for word, pos_list in (w.get("abstract_inverted_index") or {}).items() for pos in pos_list)
+    source = (w.get("primary_location") or {}).get("source") or {}
+    is_preprint = w.get("type") == "preprint" or source.get("type") == "repository"
+    return {
+        "title": w.get("display_name") or "",
+        "abstractText": " ".join(word for _, word in positions),
+        "doi": openalex_doi(w),
+        "authorString": ", ".join((a.get("author") or {}).get("display_name") or "" for a in w.get("authorships") or []),
+        "journalTitle": source.get("display_name") or "Unknown Source",
+        "source": "PPR" if is_preprint else "OA",
+        "id": (w.get("id") or "").rsplit("/", 1)[-1]
+    }
+
+
+def openalex_params(query, days_back, **extra):
+    start, end = date_window(days_back)
+    return {
+        "search.title_and_abstract": query,
+        "filter": f"from_publication_date:{start},to_publication_date:{end}," + ",".join(f"type:!{t}" for t in OPENALEX_EXCLUDED_TYPES),
+        "per_page": 100,
+        "api_key": OPENALEX_API_KEY,
+        **extra
+    }
+
+
+def needs_openalex(search_terms, days_back):
+    sample = []
+    for query in openalex_queries(search_terms):
+        data = get_json(OPENALEX_URL, openalex_params(query, days_back, select="doi"), "needs_openalex")
+        if data is None:
+            print("[WARNING][needs_openalex] OpenAlex coverage check failed. Using Europe PMC only.")
+            return False
+        sample += [openalex_doi(w) for w in data.get("results", []) if w.get("doi")]
+    sample = list(dict.fromkeys(sample))
+
+    if not sample:
+        print("[LOG] OpenAlex sample is empty. Using Europe PMC only.")
+        return False
+    if len(sample) < MIN_PROBE_SIZE:
+        print(f"[LOG] OpenAlex sample too small to judge (n={len(sample)}). Using Europe PMC + OpenAlex.")
+        return True
+
+    found = set()
+    for i in range(0, len(sample), 50):
+        query = " OR ".join(f'DOI:"{d}"' for d in sample[i:i + 50])
+        data = get_json(EUROPEPMC_URL, {"query": query, "format": "json", "resultType": "lite", "pageSize": 1000}, "needs_openalex")
+        if data is None:
+            print("[WARNING][needs_openalex] Europe PMC coverage check failed. Using Europe PMC only.")
+            return False
+        found |= {(r.get("doi") or "").lower() for r in data.get("resultList", {}).get("result", [])}
+
+    coverage = len(found & set(sample)) / len(sample)
+    use = coverage < COVERAGE_THRESHOLD
+    print(f"[LOG] Europe PMC covers {coverage:.0%} of OpenAlex sample (n={len(sample)}) -> {'Europe PMC + OpenAlex' if use else 'Europe PMC only'}.")
+    return use
+
+
+def fetch_openalex(search_terms, days_back, max_results):
+    papers = []
+    select = "id,doi,display_name,type,abstract_inverted_index,authorships,primary_location"
+    for query in openalex_queries(search_terms):
+        params = openalex_params(query, days_back, select=select, cursor="*")
+        while len(papers) < max_results:
+            data = get_json(OPENALEX_URL, params, "fetch_openalex")
+            if data is None:
+                print("[WARNING][fetch_openalex] OpenAlex unreachable. Continuing without OpenAlex results.")
+                return None
+            if params["cursor"] == "*":
+                print(f"[LOG] OpenAlex: {data.get('meta', {}).get('count', 0)} hit(s).")
+            results = data.get("results", [])
+            papers += [openalex_to_paper(w) for w in results]
+            next_cursor = data.get("meta", {}).get("next_cursor")
+            if not results or not next_cursor:
+                break
+            params["cursor"] = next_cursor
+    if len(papers) >= max_results:
+        print(f"[WARNING][fetch_openalex] Result limit ({max_results}) reached. Remaining hits were not retrieved.")
+    return papers[:max_results]
+
+
+def find_papers(search_terms, days_back=7, max_results=5000):
+    results = fetch_europepmc(get_search_query(search_terms), days_back, max_results)
+    if results is None:
+        return None, False
+
+    openalex_results = None
+    if OPENALEX_API_KEY and needs_openalex(search_terms, days_back):
+        openalex_results = fetch_openalex(search_terms, days_back, max_results)
+        results = results + (openalex_results or [])
+
+    all_papers = [p for p in results if p.get("doi")]
     papers = remove_duplicate_papers(all_papers)
-    return papers
+    return papers, openalex_results is not None
 
 
 def normalize_title(title):
@@ -298,14 +436,14 @@ def remove_duplicate_papers(papers):
     for p in papers:
         is_dup = False
         current_norm = normalize_title(p.get("title"))
-        current_doi = p.get("doi", "")
+        current_doi = p.get("doi", "").lower()
         for k, (up_norm, up_sm, up) in enumerate(unique):
-            if current_doi and current_doi == up.get("doi"):
+            if current_doi and current_doi == up.get("doi", "").lower():
                 is_dup = True
                 break
             if is_similar_title(current_norm, up_norm, up_sm):
                 is_dup = True
-                if p.get("source") in ["MED", "PMC"] and up.get("source") == "PPR":
+                if p.get("source") in ["MED", "PMC", "OA"] and up.get("source") == "PPR":
                     unique[k] = (current_norm, SequenceMatcher(None, "", current_norm), p)
                 break
         if not is_dup:
@@ -345,7 +483,15 @@ def ask_gemini(prompt, schema=None):
                 if attempt == retry_limit:
                     print(f"[WARNING][ask_gemini] Model: {model} failed {retry_limit} times ({code}: {err}). {switch_msg}")
                     break
-                time.sleep(30 if code == 429 else 15)
+
+                if code == 429:
+                    sleep_time = 30
+                elif "lite" in model:
+                    sleep_time = 5
+                else:
+                    sleep_time = 15
+
+                time.sleep(sleep_time)
 
     return None
 
@@ -528,14 +674,12 @@ def send_email(papers, days_back=7):
 
 if __name__ == "__main__":
     params = load_search_params()
-    prompt = build_prompt(params)
-
     days_back = int(params["DAYS_BACK"][0])
-    search_query = get_search_query(params["SEARCH"])
 
-    new_papers = find_papers(search_query, days_back=days_back)
+    new_papers, used_openalex = find_papers(params["SEARCH"], days_back=days_back)
     if new_papers is None:
         sys.exit(1)
+    prompt = build_prompt(params, include_conferences=used_openalex)
 
     if new_papers:
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")

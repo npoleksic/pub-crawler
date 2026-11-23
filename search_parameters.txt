@@ -43,7 +43,6 @@ monkeys
 eye tracking
 gaze shifting
 motor coordination
-brain computer interface
 visual cortex
 frontal cortex
 premotor cortex
@@ -51,25 +50,24 @@ motor cortex
 
 # Main research topics. Highest weight in LLM scoring. (Required)
 [CORE_TOPICS]
-3D vision and binocular depth perception
-sensory transformations along visual cortex
-oculomotor and gaze control mechanisms
+neural mechanisms of 3D vision
+neural mechanisms of 3D visual motion or 3D object processing
+neural mechanisms of binocular depth perception
+neural mechanisms of oculomotor control and gaze control in restrained or unrestrained paradigms
 freely-moving monkey experiments
-eye-head coordination
 sensorimotor transformations for vision and orienting
-active gaze exploration or naturalistic visual behavior
+active gaze exploration or naturalistic visual behavior in non-human primates
 primate eye/gaze tracking methods
-Frontal eye fields, area MT, area V3A, superior colliculus, LIP, CIP, FST
-cortical oscillations in primates for working memory and visual behavior
+studies of the frontal eye fields, area MT, area V3A, superior colliculus, LIP, CIP, or FST in humans or non-human primates
+cortical oscillations for working memory, visual behavior, or oculomotor control
 
 # Topics of secondary interest. Lower weight in LLM scoring. (Optional)
 [RELATED_TOPICS]
 primate neurophysiology and causal manipulation
-sensory perception
 predictive coding
 motor control or motor learning mechanisms
 multisensory integration
-sensorimotor circuit recording or perturbation
+primate sensorimotor circuit recording or perturbation
 higher-order brain function in primates
 
 # Ranked preference lists. Name the list in the header. First line = highest priority.
@@ -83,7 +81,8 @@ invertebrates
 
 # Topics to exclude. A paper scores 0 only if one of these is its MAIN subject. (Optional)
 [EXCLUDE]
-human studies of sports
+receptors or ion channels
+human studies of sports or occupational performance
 computational studies without basis in animal models
 case studies
 clinical trials
