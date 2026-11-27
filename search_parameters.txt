@@ -2,12 +2,33 @@
 # PUB-CRAWLER SEARCH CONFIGURATION
 # ==========================================
 # Lines starting with # are ignored. Put each item on its own line.
+#
+# HOW A RUN WORKS
+# 1. The [SEARCH] terms query Europe PMC. If you have an OpenAlex key and
+#    Europe PMC misses 10% or more of a sample of OpenAlex results, OpenAlex
+#    is searched too. Only papers with a DOI are kept.
+# 2. Gemini screens the papers in batches of 20. Papers that score 6 or
+#    higher are checked again in batches of 10.
+# 3. Papers that score 7 or higher are emailed.
+#    (Batch sizes, score limits, and scoring weights are settings in crawl.py.)
+#
+# ADDITIONAL CONSIDERATIONS
+# - The search only needs to find every relevant paper. The screening
+#   removes the rest, so a broad search is acceptable. But each extra
+#   20 papers costs 1 more request and makes the run longer.
+# - One broad word (for example "cortex" or "patients") can add thousands
+#   of papers. Short abbreviations can match other fields that use the
+#   same letters. Prefer full names or specific phrases.
+# - The number of papers increases with DAYS_BACK. Each database stops at
+#   5,000 papers per run. Papers after that are not screened, and a
+#   warning is shown.
 
-# How many days back to search
+# How many days back to search. Use the interval between your runs
+# (for example, 7 for a weekly run) so that no papers are missed.
 [DAYS_BACK]
 7
 
-# Terms for the database query (matched in title or abstract)
+# Terms for the database query (combined with OR, matched in the title or abstract).
 [SEARCH]
 frontal eye field
 frontal eye fields
@@ -22,6 +43,7 @@ FEF
 V3A
 CIP
 FST
+area MST
 visuomotor
 oculomotor
 sensorimotor
@@ -48,70 +70,42 @@ frontal cortex
 premotor cortex
 motor cortex
 
-# Main research topics. Highest weight in LLM scoring. (Required)
+# Your main research topics. These have the most effect on the score. (Required)
+# Write each topic as a specific phrase.
 [CORE_TOPICS]
-neural mechanisms of 3D vision
-neural mechanisms of 3D visual motion or 3D object processing
-neural mechanisms of binocular depth perception
-neural mechanisms of oculomotor control and gaze control in restrained or unrestrained paradigms
-freely-moving monkey experiments
-sensorimotor transformations for vision and orienting
-active gaze exploration or naturalistic visual behavior in non-human primates
-primate eye/gaze tracking methods
-studies of the frontal eye fields, area MT, area V3A, superior colliculus, LIP, CIP, or FST in humans or non-human primates
+neural mechanisms of 3D visual perception (3D motion, depth perception, object pose)
+neural mechanisms of oculomotor control, visuomotor transformations, or eye-head coordination
+neural mechanisms of active gaze exploration or naturalistic visual behavior
+neural mechanisms of spatial perception
 cortical oscillations for working memory, visual behavior, or oculomotor control
 
-# Topics of secondary interest. Lower weight in LLM scoring. (Optional)
+# Topics of secondary interest. These have less effect on the score. (Optional)
 [RELATED_TOPICS]
-primate neurophysiology and causal manipulation
-predictive coding
-motor control or motor learning mechanisms
-multisensory integration
-primate sensorimotor circuit recording or perturbation
-higher-order brain function in primates
+neural mechanisms of motor control, motor learning, or motor coordination in primates
+neural mechanisms of multisensory integration or higher-order sensory processing in primates
 
-# Ranked preference lists. Name the list in the header. First line = highest priority.
+# Ranked lists. Name the list in the header. First line = highest priority.
+# A paper that matches no item on a list gets no points for that list.
 # (Optional. Add as many lists as you need, or none.)
 [PRIORITY: model organism]
-non-human primate
-human
-non-primate mammals
+rhesus macaques
+other non-human primates
+humans and non-primate mammals
 non-mammalian vertebrates
 invertebrates
 
-# Topics to exclude. A paper scores 0 only if one of these is its MAIN subject. (Optional)
+# Topics you do not want. A paper scores 0 if one of these applies to its
+# subject, its study population or model, its methods, or its study design.
+# A passing mention does not count. (Optional)
 [EXCLUDE]
-receptors or ion channels
-human studies of sports or occupational performance
-computational studies without basis in animal models
-case studies
-clinical trials
-human psychophysics (unless vision or eye movement related)
+clinical or patient research
+diseases and disorders, including animal models of disease
+molecular, cellular or synaptic mechanisms
+blood flow or blood vessels as the subject of study
+development or aging (maturation, early life, infants, elderly)
+applied human research (sports, education, occupational or workplace performance, driving, human-computer interaction)
+human language, speech or reading
 human social behavior
-stroke
-Alzheimer's
-epilepsy
-speech production
-reading or auditory language processing
-observational studies
-organoids
-molecular mechanisms
-microscopy
-cell biology
-maturation
-prenatal or infant or early life models
-elderly or aging models
-auditory processing
-neurodevelopment
-insect models
-sleep or sleep cycles
-anesthesia or unconsciousness
-psychedelics
-eye disease
-spinal cord
-biomarkers
-biosensors
-diagnosis
-infectious disease
-EEG
-chronic pain
+sleep or unconscious states
+substance use
+wild or free-ranging animals and field observations

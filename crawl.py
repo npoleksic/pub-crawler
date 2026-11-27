@@ -71,11 +71,13 @@ OPENALEX_API_KEY = os.environ.get("OPENALEX_API_KEY") or None
 
 EUROPEPMC_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 OPENALEX_URL = "https://api.openalex.org/works"
-COVERAGE_THRESHOLD = 0.9  # use OpenAlex too if Europe PMC has less than this share of the OpenAlex sample
-MIN_PROBE_SIZE = 20       # smaller samples are too noisy to judge; use both sources
-HIGH_DEMAND_PATIENCE = 600  # seconds each model waits on high demand (500/503) before switching
-MODEL_COOLDOWN = 600        # seconds a model is skipped after it runs out of high-demand patience
-OPENALEX_EXCLUDED_TYPES = ["dataset", "software", "supplementary-materials", "paratext", "dissertation"]
+COVERAGE_THRESHOLD = 0.9    # use OpenAlex too if Europe PMC has less than this share of the OpenAlex sample
+MIN_PROBE_SIZE = 20
+HIGH_DEMAND_PATIENCE = 600
+MODEL_COOLDOWN = 600
+QUICK_RETRIES = 3
+OPENALEX_EXCLUDED_TYPES = ["dataset", "software", "supplementary-materials", "paratext", "dissertation", "conference-abstract"]
+EXCLUDED_DOI_PREFIXES = ["10.6084/", "10.5281/"]  # figshare, Zenodo
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -91,16 +93,45 @@ MODEL_CHAIN = [
     ]
 
 SCORE_CUTOFF = 7  # 0-10; papers scoring at or above this are emailed
+
+TOPIC_WEIGHT = 0.4        # weights sum to 1; without priority lists, score = 10 x topic
+PRIORITY_WEIGHT = 0.6
+MATCH_STRENGTH = {"core_main": 1.0, "core_partial": 0.67, "related_main": 0.67, "related_partial": 0.33}
+EXTRA_MATCH_BONUS = 0.17  # added per additional matched topic; the topic part is limited to 1.0
+PRIORITY_MIN = 0.25       # priority part for the lowest rank (rank 1 = 1.0, no match = 0)
+
+VERIFY_MARGIN = 1.0
+VERIFY_BATCH_SIZE = 10
+QUOTE_CHECK = "log"       # "off": ignore quotes; "log": keep claims, note quotes not found in the abstract; "drop": remove those claims
 RUN_LOCALLY = os.environ.get("GITHUB_ACTIONS") != "true"
 
 
 class Screening(BaseModel):
     id: int
     reason: str
-    topic: int
-    priority: int
-    transfer: int
-    score: int
+    core_main: list[int]
+    core_partial: list[int]
+    related_main: list[int]
+    related_partial: list[int]
+    priority_rank: list[int]
+    excluded: list[int]
+    not_paper: bool
+    unreliable_venue: bool
+
+
+class Evidence(BaseModel):
+    item: str
+    level: str
+    quote: str
+
+
+class Verification(BaseModel):
+    id: int
+    reason: str
+    topics: list[Evidence]
+    excluded: list[Evidence]
+    priority_rank: list[int]
+    not_paper: bool
     summary: str
 
 
@@ -159,53 +190,225 @@ def load_search_params(filename="search_parameters.txt"):
 
 
 def build_prompt(params, include_conferences=False):
-    has_priority = bool(params["PRIORITY"])
     venue = "journal or conference" if include_conferences else "journal"
+    priority_lists = list(params["PRIORITY"].items())
     lines = [
-        "You are screening newly released research papers for a researcher. Score how relevant each paper is to the researcher's interests.",
+        "You are reading newly released research papers for a researcher. For each paper, report which of the researcher's listed items it matches. "
+        "Do not rate the papers. Report facts only, and judge each paper on its own, without comparing it to the other papers.",
         "",
-        "RESEARCHER'S INTERESTS",
-        f"Core topics (highest weight): {'; '.join(params['CORE_TOPICS'])}",
-    ]
-    if params["RELATED_TOPICS"]:
-        lines.append(f"Related topics (lower weight): {'; '.join(params['RELATED_TOPICS'])}")
-    for name, items in params["PRIORITY"].items():
-        lines.append(f"Preferred {name}, from highest to lowest priority: {' > '.join(items)}")
-    if params["EXCLUDE"]:
-        lines.append(f"Excluded topics: {'; '.join(params['EXCLUDE'])}")
+    ] + numbered_items(params)
 
-    rules = ["Core topics weigh most. Related topics weigh less. A paper on neither scores low."]
-    if has_priority:
-        rules.append("For each preferred list, a paper that matches a higher-ranked item scores higher than one that matches a lower-ranked item.")
-    rules += [
-        "A paper outside the core topics" + (", or that matches a lower-ranked item on a preferred list," if has_priority else "")
-        + " can still score high if its findings give clear, transferable insight into a core topic.",
-        "Score 0 if an excluded topic is the main subject of the paper. A passing mention of an excluded topic does not count.",
-        "Treat all article types (primary research, reviews, methods, theory) equally, unless the interests above say otherwise.",
-        "Score 0 if the entry is not a paper: a deposited dataset, a code or software release, supplementary material, or a thesis or dissertation. A paper that describes a dataset or software is a paper.",
-        f"Score 0 if the paper is not a preprint and is not published in a reputable {venue} known for publishing high-level research on these topics.",
-    ]
-    lines += ["", "SCORING RULES"] + [f"{i}. {r}" for i, r in enumerate(rules, 1)]
     lines += [
         "",
-        "SCORE SCALE (0-10)",
-        "9-10: directly addresses a core topic" + (" and matches the top of each preferred list" if has_priority else "") + ".",
-        "7-8: clearly relevant: addresses a core topic" + (" with lower preference" if has_priority else "")
-        + ", or a related topic with strong transferable insight into a core topic.",
-        "4-6: partly relevant: a related topic, or a weak connection to a core topic.",
-        "1-3: marginal connection only.",
-        f"0: unrelated, excluded topic, or unreliable {venue}.",
+        "MATCHING RULES",
+        "- A topic matches only if the paper studies it as written, including its qualifiers (for example, 'neural mechanisms of'). Sharing words with a topic is not a match.",
+        "- 'main': the topic is the main subject of the paper. 'partial': the topic is a substantial secondary part of the paper. A passing mention is not a match.",
+        "- Put each topic number in only one of the main and partial lists.",
         "",
         "OUTPUT: one entry per paper, with the paper's id. Fill the fields in this order:",
-        "- reason: one sentence that states the main subject of the paper and how it relates to the interests.",
-        "- topic: 0-10, relevance to the core and related topics.",
-        "- priority: 0-10, fit to the preferred lists." if has_priority else "- priority: always 10.",
-        "- transfer: 0-10, value of transferable insight into a core topic.",
-        "- score: 0-10, overall relevance. Use your judgment; this is not an average of the other fields.",
-        f"- summary: if score is {SCORE_CUTOFF} or higher, a 2-sentence summary of the significance and main findings. Otherwise an empty string.",
+        "- reason: one sentence that states the main subject of the paper and how it relates to the listed items.",
+        "- core_main, core_partial: numbers of the matching core topics (C numbers without the letter), or empty lists.",
+        "- related_main, related_partial: numbers of the matching related topics (R numbers without the letter), or empty lists.",
+        "- priority_rank: one number per priority list, in list order: the rank of the highest-ranked item that the paper studies, or 0 if no item matches."
+        if priority_lists else "- priority_rank: an empty list.",
+        "- excluded: numbers of the excluded items (X numbers without the letter) that apply to the subject of the paper, its study population or model, "
+        "its methods, or its study design. A passing mention does not count. Empty list if none.",
+        "- not_paper: true if the entry is not a paper: a deposited dataset, a code or software release, supplementary material, a thesis or dissertation, "
+        "or a conference abstract, poster or slide deck. A paper that describes a dataset or software is a paper, and so is a full conference paper.",
+        f"- unreliable_venue: true if the paper is not a preprint and is not published in a reputable {venue} known for publishing high-level research on these topics.",
         "",
     ]
     return "\n".join(lines)
+
+
+def numbered_items(params):
+    lines = ["CORE TOPICS"] + [f"C{i}. {t}" for i, t in enumerate(params["CORE_TOPICS"], 1)]
+    if params["RELATED_TOPICS"]:
+        lines += ["", "RELATED TOPICS"] + [f"R{i}. {t}" for i, t in enumerate(params["RELATED_TOPICS"], 1)]
+    if params["PRIORITY"]:
+        lines += ["", "PRIORITY LISTS (rank 1 = highest)"]
+        for n, (name, items) in enumerate(params["PRIORITY"].items(), 1):
+            lines.append(f"List {n} ({name}): " + "; ".join(f"{r}. {item}" for r, item in enumerate(items, 1)))
+    if params["EXCLUDE"]:
+        lines += ["", "EXCLUDED ITEMS"] + [f"X{i}. {t}" for i, t in enumerate(params["EXCLUDE"], 1)]
+    return lines
+
+
+def build_verify_prompt(params):
+    lines = [
+        "You are auditing an automated screening of research papers for a researcher. Check each paper carefully and on its own, "
+        "without comparing it to the other papers. Earlier results are not shown to you: decide from the paper only.",
+        "",
+    ] + numbered_items(params) + [
+        "",
+        "AUDIT RULES",
+        "- A topic matches only if the paper studies it as written, including its qualifiers (for example, 'neural mechanisms of'). Sharing words with a topic is not a match.",
+        "- 'main': the topic is the central research question of the paper. 'partial': the topic is a substantial secondary part. A passing mention is not a match.",
+        "- Check every excluded item, one by one. An excluded item applies if it describes the subject of the paper, its study population or model, "
+        "its methods, or its study design. A passing mention does not count.",
+        "- For each topic and each excluded item that you report, copy a short quote (at least 3 words) exactly from the title or abstract that supports it.",
+        "",
+        "OUTPUT: one entry per paper, with the paper's id:",
+        "- reason: one sentence that states the main subject of the paper and how it relates to the listed items.",
+        "- topics: the matching topics, each with item ('C' or 'R' and its number, for example 'C3'), level ('main' or 'partial') and quote. Empty list if none.",
+        "- excluded: the excluded items that apply, each with item ('X' and its number), level 'applies' and quote. Empty list if none.",
+        "- priority_rank: one number per priority list, in list order: the rank of the highest-ranked item that the paper studies, or 0 if no item matches."
+        if params["PRIORITY"] else "- priority_rank: an empty list.",
+        "- not_paper: true if the entry is not a paper: a deposited dataset, a code or software release, supplementary material, a thesis or dissertation, "
+        "or a conference abstract, poster or slide deck. A paper that describes a dataset or software is a paper, and so is a full conference paper.",
+        "- summary: 2 to 3 specific sentences for a researcher in this field: the research question, the species and main methods, and the main finding "
+        "and why it matters. Name the brain areas, tasks and effects. Do not start with 'This paper' or 'This study'.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def normalize_text(text):
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"<[^>]+>", " ", (text or "").lower())).strip()
+
+
+def quote_found(quote, normalized_text):
+    q = normalize_text(quote)
+    return len(q.split()) >= 3 and f" {q} " in f" {normalized_text} "
+
+
+def fact_codes(facts):
+    return ({f"C{i}" for i in (facts.get("core_main") or []) + (facts.get("core_partial") or [])}
+            | {f"R{i}" for i in (facts.get("related_main") or []) + (facts.get("related_partial") or [])}
+            | {f"X{i}" for i in facts.get("excluded") or []})
+
+
+def apply_verification(p, v, params):
+    first = p.get("llm_facts") or {}
+    text = normalize_text(p.get("title", "") + " " + (p.get("abstractText") or ""))
+    facts = {"core_main": [], "core_partial": [], "related_main": [], "related_partial": [],
+             "priority_rank": list(v.priority_rank), "excluded": list(first.get("excluded") or []),
+             "not_paper": bool(v.not_paper or first.get("not_paper")), "unreliable_venue": bool(first.get("unreliable_venue"))}
+    no_quote = []
+
+    def accepted(e):
+        if QUOTE_CHECK == "off" or quote_found(e.quote, text):
+            return True
+        no_quote.append(e.item.strip().upper())
+        return QUOTE_CHECK == "log"
+
+    for e in v.topics:
+        m = re.fullmatch(r"([CR])(\d+)", e.item.strip().upper())
+        level = e.level.strip().lower()
+        if m and level in ("main", "partial") and accepted(e):
+            facts[("core_" if m[1] == "C" else "related_") + level].append(int(m[2]))
+    for e in v.excluded:
+        m = re.fullmatch(r"X(\d+)", e.item.strip().upper())
+        if m and accepted(e):
+            facts["excluded"].append(int(m[1]))
+    facts["excluded"] = sorted(set(facts["excluded"]))
+
+    before, after = fact_codes(first), fact_codes(facts)
+    changes = [f"-{c}" for c in sorted(before - after)] + [f"+{c}" for c in sorted(after - before)]
+    p["llm_facts"] = facts
+    p["llm_score"], note = compute_score(facts, params)
+    verify_note = "Verified" + (": " + " ".join(changes) if changes else "") + (f"; no quote in abstract: {', '.join(no_quote)}" if no_quote else "")
+    p["llm_note"] = "; ".join(x for x in (note, verify_note) if x)
+    p["llm_reason"] = v.reason.strip() or p.get("llm_reason", "")
+    p["llm_summary_text"] = v.summary.strip()
+    p["llm_verified"] = True
+
+
+def verify_papers(papers, params, batch_size=VERIFY_BATCH_SIZE, max_attempts=2):
+    if not papers:
+        return
+    prompt = build_verify_prompt(params)
+    print(f"[LOG] Verifying {len(papers)} paper(s)...")
+    for i in range(0, len(papers), batch_size):
+        batch = papers[i:i + batch_size]
+        payload = [{"id": idx, "title": p.get("title", "No Title"), "journal": paper_journal(p), "abstract": p.get("abstractText")} for idx, p in enumerate(batch)]
+        results = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                results = ask_gemini(prompt + f"Papers:\n{json.dumps(payload)}", schema=list[Verification])
+            except GeminiOutage:
+                break
+            if results is not None:
+                break
+            print(f"[WARNING][verify_papers] Verification batch {i // batch_size + 1} failed ({attempt}/{max_attempts}).")
+        by_id = {}
+        for v in results or []:
+            if 0 <= v.id < len(batch) and v.id not in by_id:
+                by_id[v.id] = v
+        for idx, p in enumerate(batch):
+            if idx in by_id:
+                apply_verification(p, by_id[idx], params)
+            else:
+                p["llm_note"] = "; ".join(x for x in (p.get("llm_note"), "Not verified") if x)
+        if results is None and not MODEL_CHAIN:
+            for p in papers[i + batch_size:]:
+                p["llm_note"] = "; ".join(x for x in (p.get("llm_note"), "Not verified") if x)
+            break
+        time.sleep(2)
+
+
+def compute_score(facts, params):
+    def valid(key, n):
+        return sorted({i for i in facts.get(key) or [] if isinstance(i, int) and 1 <= i <= n})
+
+    excluded = valid("excluded", len(params["EXCLUDE"]))
+    if excluded:
+        return 0.0, "Excluded: " + "; ".join(params["EXCLUDE"][i - 1] for i in excluded)
+    if facts.get("not_paper"):
+        return 0.0, "Not a paper"
+    if facts.get("unreliable_venue"):
+        return 0.0, "Unreliable venue"
+
+    core_main = valid("core_main", len(params["CORE_TOPICS"]))
+    related_main = valid("related_main", len(params["RELATED_TOPICS"]))
+    matches = {
+        "core_main": core_main,
+        "core_partial": [i for i in valid("core_partial", len(params["CORE_TOPICS"])) if i not in core_main],
+        "related_main": related_main,
+        "related_partial": [i for i in valid("related_partial", len(params["RELATED_TOPICS"])) if i not in related_main],
+    }
+    strengths = [MATCH_STRENGTH[k] for k, ids in matches.items() for _ in ids]
+    topic = min(1.0, max(strengths, default=0.0) + EXTRA_MATCH_BONUS * max(len(strengths) - 1, 0))
+
+    notes = [] if strengths else ["No topic match"]
+    lists = list(params["PRIORITY"].values())
+    if not lists:
+        return round(10 * topic, 1), "; ".join(notes)
+
+    ranks = (list(facts.get("priority_rank") or []) + [0] * len(lists))[:len(lists)]
+    parts, unmatched = [], False
+    for rank, items in zip(ranks, lists):
+        k = len(items)
+        if not isinstance(rank, int) or not 1 <= rank <= k:
+            parts.append(0.0)
+            unmatched = True
+        else:
+            parts.append(1.0 if k == 1 else PRIORITY_MIN + (1 - PRIORITY_MIN) * (k - rank) / (k - 1))
+    if unmatched:
+        notes.append("No priority match")
+    score = 10 * (TOPIC_WEIGHT * topic + PRIORITY_WEIGHT * sum(parts) / len(parts))
+    return round(score, 1), "; ".join(notes)
+
+
+def format_facts(facts, params):
+    def items(keys, prefix, names):
+        out = []
+        for key in keys:
+            for i in sorted(set(facts.get(key) or [])):
+                if isinstance(i, int) and 1 <= i <= len(names):
+                    out.append(f"{prefix}{i} ({key.split('_')[1]}): {names[i - 1]}")
+        return "; ".join(out)
+
+    lists = list(params["PRIORITY"].values())
+    ranks = (list(facts.get("priority_rank") or []) + [0] * len(lists))[:len(lists)]
+    priority = "; ".join(f"{r} ({items_[r - 1] if isinstance(r, int) and 1 <= r <= len(items_) else 'none'})" for r, items_ in zip(ranks, lists))
+    excluded = "; ".join(f"X{i}: {params['EXCLUDE'][i - 1]}" for i in sorted(set(facts.get("excluded") or [])) if isinstance(i, int) and 1 <= i <= len(params["EXCLUDE"]))
+    flags = "; ".join(k for k in ("not_paper", "unreliable_venue") if facts.get(k))
+    return [
+        items(["core_main", "core_partial"], "C", params["CORE_TOPICS"]),
+        items(["related_main", "related_partial"], "R", params["RELATED_TOPICS"]),
+        priority, excluded, flags,
+    ]
 
 
 def paper_journal(p):
@@ -222,7 +425,7 @@ def paper_link(p):
     return f"https://doi.org/{doi}" if doi else f"https://europepmc.org/article/{p.get('source', '')}/{p.get('id', '')}"
 
 
-def write_log(papers):
+def write_log(papers, params):
     if not RUN_LOCALLY:
         return
     path = Path(__file__).resolve().parent / f"pub-crawler_log_{datetime.now():%Y-%m-%d_%H%M}.csv"
@@ -230,13 +433,17 @@ def write_log(papers):
     try:
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["score", "passed", "title", "reason", "link"])
+            w.writerow(["score", "passed", "verified", "title", "reason", "note", "core", "related", "priority", "excluded", "flags", "link"])
             for p in rows:
+                facts = p.get("llm_facts")
                 w.writerow([
                     p.get("llm_score", ""),
                     "Y" if p.get("llm_summary") else "N",
+                    "Y" if p.get("llm_verified") else "",
                     re.sub(r"<[^>]+>", "", p.get("title", "")),
                     p.get("llm_reason", ""),
+                    p.get("llm_note", ""),
+                    *(format_facts(facts, params) if facts else [""] * 5),
                     paper_link(p)
                 ])
         print(f"[LOG] Screening log saved: {path.name}")
@@ -257,7 +464,7 @@ def get_json(url, params, label, attempts=5):
             return response.json()
         except (requests.exceptions.RequestException, ValueError) as err:
             msg = str(err).replace(OPENALEX_API_KEY, "***") if OPENALEX_API_KEY else str(err)
-            print(f"[WARNING][{label}] API call failed ({attempt}/{attempts}): {msg}")
+            print(f"[WARNING][{label}] API call failed ({attempt}/{attempts}): {msg[:200]}" + (" ..." if len(msg) > 200 else ""))
             status = getattr(getattr(err, "response", None), "status_code", None)
             if status and 400 <= status < 500 and status != 429:
                 break
@@ -318,6 +525,10 @@ def openalex_queries(search_terms, max_len=2500):
     return [join(c) for c in chunks]
 
 
+def excluded_repository(doi):
+    return (doi or "").lower().startswith(tuple(EXCLUDED_DOI_PREFIXES))
+
+
 def openalex_doi(w):
     return (w.get("doi") or "").replace("https://doi.org/", "").lower()
 
@@ -355,7 +566,7 @@ def needs_openalex(search_terms, days_back):
         if data is None:
             print("[WARNING][needs_openalex] OpenAlex coverage check failed. Using Europe PMC only.")
             return False
-        sample += [openalex_doi(w) for w in data.get("results", []) if w.get("doi")]
+        sample += [d for d in (openalex_doi(w) for w in data.get("results", [])) if d and not excluded_repository(d)]
     sample = list(dict.fromkeys(sample))
 
     if not sample:
@@ -413,7 +624,7 @@ def find_papers(search_terms, days_back=7, max_results=5000):
         openalex_results = fetch_openalex(search_terms, days_back, max_results)
         results = results + (openalex_results or [])
 
-    all_papers = [p for p in results if p.get("doi")]
+    all_papers = [p for p in results if p.get("doi") and not excluded_repository(p["doi"])]
     papers = remove_duplicate_papers(all_papers)
     return papers, openalex_results is not None
 
@@ -462,7 +673,7 @@ COOLDOWN_UNTIL = {}
 
 def ask_gemini(prompt, schema=None):
     retry_limit = 10
-    config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema) if schema else None
+    config = types.GenerateContentConfig(temperature=0, **({"response_mime_type": "application/json", "response_schema": schema} if schema else {}))
 
     now = time.monotonic()
     order = [m for m in MODEL_CHAIN if COOLDOWN_UNTIL.get(m, 0) <= now] + [m for m in MODEL_CHAIN if COOLDOWN_UNTIL.get(m, 0) > now]
@@ -472,7 +683,7 @@ def ask_gemini(prompt, schema=None):
         attempts, busy_attempts, waited = 0, 0, 0
         while True:
             try:
-                response = client.models.generate_content(model=model, contents=prompt, config=config)
+                response = client.chats.create(model=model, config=config).send_message(prompt)
                 result = response.parsed if schema else response.text
                 if result is None:
                     print(f"[WARNING][ask_gemini] Model: {model} returned an empty or invalid response.")
@@ -498,8 +709,11 @@ def ask_gemini(prompt, schema=None):
                         print(f"[WARNING][ask_gemini] Model: {model} still in high demand after {waited} s. Skipping it for {MODEL_COOLDOWN} s. {switch_msg}")
                         break
                     busy_attempts += 1
-                    wait = min(10 * 2 ** (busy_attempts - 1), 60, HIGH_DEMAND_PATIENCE - waited)
-                    print(f"[WARNING][ask_gemini] High demand on {model} ({code}). Waiting {wait} s (waited {waited}/{HIGH_DEMAND_PATIENCE} s).")
+                    if busy_attempts <= QUICK_RETRIES:
+                        wait = 0.2
+                    else:
+                        wait = min(10 * 2 ** (busy_attempts - QUICK_RETRIES - 1), 60, HIGH_DEMAND_PATIENCE - waited)
+                        print(f"[WARNING][ask_gemini] High demand on {model} ({code}). Waiting {wait} s (waited {int(waited)}/{HIGH_DEMAND_PATIENCE} s).")
                     time.sleep(wait)
                     waited += wait
                     continue
@@ -512,7 +726,7 @@ def ask_gemini(prompt, schema=None):
     raise GeminiOutage()
 
 
-def batch_process_papers(papers, prompt, batch_size=20, max_attempts=3, max_consecutive_failures=3):
+def batch_process_papers(papers, prompt, params, batch_size=20, max_attempts=3, max_consecutive_failures=3, verify=True):
     approved_papers = []
     skipped_count = 0
     consecutive_failures = 0
@@ -586,14 +800,20 @@ def batch_process_papers(papers, prompt, batch_size=20, max_attempts=3, max_cons
             if res is None:
                 p["llm_reason"] = "Not scored (missing from LLM output)"
                 continue
-            p["llm_score"] = max(0, min(10, res.score))
+            p["llm_facts"] = res.model_dump(exclude={"id", "reason"})
+            if p.get("source") == "PPR":
+                p["llm_facts"]["unreliable_venue"] = False
+            p["llm_score"], p["llm_note"] = compute_score(p["llm_facts"], params)
             p["llm_reason"] = res.reason.strip()
-            if p["llm_score"] >= SCORE_CUTOFF:
-                p["llm_summary"] = res.summary.strip() or p["llm_reason"]
-                approved_papers.append(p)
         time.sleep(5)
 
     print(f"[LOG] Completed evaluation of {len(valid_papers)} paper(s)!".ljust(30))
+    if verify:
+        verify_papers([p for p in valid_papers if p.get("llm_score", -1) >= SCORE_CUTOFF - VERIFY_MARGIN], params)
+    for p in valid_papers:
+        if p.get("llm_score", -1) >= SCORE_CUTOFF:
+            p["llm_summary"] = p.get("llm_summary_text") or p["llm_reason"]
+            approved_papers.append(p)
     if skipped_count:
         print(f"[WARNING][batch_process_papers] {skipped_count} paper(s) could not be screened and were skipped.")
         if skipped_count == len(valid_papers):
@@ -699,7 +919,6 @@ def send_email(papers, days_back=7):
     server.quit()
     print("[LOG] Success!")
 
-
 if __name__ == "__main__":
     params = load_search_params()
     days_back = int(params["DAYS_BACK"][0])
@@ -711,8 +930,8 @@ if __name__ == "__main__":
 
     if new_papers:
         print(f"[LOG] {len(new_papers)} candidate paper(s) pulled from database.")
-        filtered_papers = batch_process_papers(new_papers, prompt, batch_size=20)
-        write_log(new_papers)
+        filtered_papers = batch_process_papers(new_papers, prompt, params, batch_size=20)
+        write_log(new_papers, params)
         if filtered_papers is None:
             print("[LOG][ERROR] Failed to filter publications.")
             sys.exit(1)
